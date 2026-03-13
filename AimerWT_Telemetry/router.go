@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -56,6 +57,10 @@ func initRouter(r *gin.Engine) {
 
 		admin := authorized.Group("/admin")
 		{
+			admin.GET("/control", func(c *gin.Context) {
+				c.JSON(200, gin.H{"status": "success", "config": sysConfig})
+			})
+
 			admin.GET("/stats", func(c *gin.Context) {
 				rangeDays := c.DefaultQuery("range", "30")
 				days, _ := strconv.Atoi(rangeDays)
@@ -233,6 +238,7 @@ func initRouter(r *gin.Engine) {
 				}
 
 				action, _ := req["action"].(string)
+				shouldPersist := true
 
 				switch action {
 				case "maintenance":
@@ -284,6 +290,11 @@ func initRouter(r *gin.Engine) {
 					if val, ok := req["scope"].(string); ok {
 						sysConfig.UpdateScope = val
 					}
+				case "_query":
+					shouldPersist = false
+				default:
+					c.JSON(400, gin.H{"error": "Unknown action"})
+					return
 				}
 
 				// WebSocket 实时推送
@@ -304,6 +315,11 @@ func initRouter(r *gin.Engine) {
 							BroadcastUpdate(sysConfig.UpdateContent, sysConfig.UpdateUrl, sysConfig.UpdateScope)
 						}
 					}
+				}
+
+				if shouldPersist {
+					// 持久化 sysConfig 到数据库
+					PersistSysConfig()
 				}
 
 				c.JSON(200, gin.H{"status": "success", "config": sysConfig})
@@ -359,8 +375,257 @@ func initRouter(r *gin.Engine) {
 				}
 				c.JSON(200, gin.H{"status": "success"})
 			})
+
+			// 广告轮播管理 API
+			admin.GET("/ad-carousel", func(c *gin.Context) {
+				items := LoadAdCarouselItems()
+				c.JSON(200, gin.H{
+					"items":       items,
+					"interval_ms": LoadAdCarouselInterval(),
+				})
+			})
+
+			admin.POST("/ad-carousel", func(c *gin.Context) {
+				var req struct {
+					Items      []AdCarouselItem `json:"items"`
+					IntervalMs int              `json:"interval_ms"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(400, gin.H{"error": "Invalid JSON"})
+					return
+				}
+
+				SaveAdCarouselItems(req.Items)
+				if req.IntervalMs > 0 {
+					SaveConfig("ad_carousel_interval_ms", strconv.Itoa(req.IntervalMs))
+				}
+
+				c.JSON(200, gin.H{"status": "success", "count": len(req.Items)})
+			})
+
+			// 公告列表 CRUD API
+			admin.GET("/notices", func(c *gin.Context) {
+				var items []NoticeItem
+				db.Order("sort_order asc, id desc").Find(&items)
+				c.JSON(200, gin.H{"items": items})
+			})
+
+			admin.POST("/notices", func(c *gin.Context) {
+				var item NoticeItem
+				if err := c.ShouldBindJSON(&item); err != nil {
+					c.JSON(400, gin.H{"error": "Invalid JSON"})
+					return
+				}
+				item.ID = 0
+				// 置顶互斥：新记录置顶时取消其他置顶
+				if item.IsPinned {
+					db.Model(&NoticeItem{}).Where("is_pinned = ?", true).Update("is_pinned", false)
+				}
+				if err := db.Create(&item).Error; err != nil {
+					c.JSON(500, gin.H{"error": "Create failed"})
+					return
+				}
+				c.JSON(200, gin.H{"status": "success", "item": item})
+			})
+
+			admin.PUT("/notices/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				var existing NoticeItem
+				if err := db.First(&existing, id).Error; err != nil {
+					c.JSON(404, gin.H{"error": "Not found"})
+					return
+				}
+				var updates NoticeItem
+				if err := c.ShouldBindJSON(&updates); err != nil {
+					c.JSON(400, gin.H{"error": "Invalid JSON"})
+					return
+				}
+				if updates.IsPinned {
+					db.Model(&NoticeItem{}).Where("is_pinned = ? AND id != ?", true, existing.ID).Update("is_pinned", false)
+				}
+				db.Model(&existing).Updates(map[string]interface{}{
+					"type": updates.Type, "tag": updates.Tag, "title": updates.Title,
+					"summary": updates.Summary, "content": updates.Content, "date": updates.Date,
+					"is_pinned": updates.IsPinned, "sort_order": updates.SortOrder,
+				})
+				db.First(&existing, id)
+				c.JSON(200, gin.H{"status": "success", "item": existing})
+			})
+
+			admin.DELETE("/notices/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				if err := db.Delete(&NoticeItem{}, id).Error; err != nil {
+					c.JSON(500, gin.H{"error": "Delete failed"})
+					return
+				}
+				c.JSON(200, gin.H{"status": "success"})
+			})
+
+			// 反馈管理 API (admin)
+			admin.GET("/feedback", func(c *gin.Context) {
+				query := db.Model(&FeedbackRecord{})
+
+				if status := c.Query("status"); status != "" {
+					query = query.Where("status = ?", status)
+				}
+				if category := c.Query("category"); category != "" {
+					query = query.Where("category = ?", category)
+				}
+				if version := c.Query("version"); version != "" {
+					query = query.Where("version = ?", version)
+				}
+				if keyword := c.Query("keyword"); keyword != "" {
+					like := "%" + keyword + "%"
+					query = query.Where("content LIKE ? OR contact LIKE ?", like, like)
+				}
+
+				var total int64
+				query.Count(&total)
+
+				page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+				pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+				if page < 1 {
+					page = 1
+				}
+				if pageSize < 1 || pageSize > 200 {
+					pageSize = 50
+				}
+				offset := (page - 1) * pageSize
+
+				var items []FeedbackRecord
+				query.Order("id desc").Offset(offset).Limit(pageSize).Find(&items)
+
+				// 关联用户别名
+				result := make([]map[string]any, len(items))
+				for i, fb := range items {
+					var alias string
+					db.Model(&TelemetryRecord{}).Where("machine_id = ?", fb.MachineID).Select("alias").Scan(&alias)
+					result[i] = map[string]any{
+						"id":         fb.ID,
+						"machine_id": fb.MachineID,
+						"alias":      alias,
+						"version":    fb.Version,
+						"contact":    fb.Contact,
+						"content":    fb.Content,
+						"category":   fb.Category,
+						"os":         fb.OS,
+						"os_version": fb.OSVersion,
+						"screen_res": fb.ScreenRes,
+						"locale":     fb.Locale,
+						"status":     fb.Status,
+						"admin_note": fb.AdminNote,
+						"created_at": fb.CreatedAt.Format("2006-01-02 15:04:05"),
+						"updated_at": fb.UpdatedAt.Format("2006-01-02 15:04:05"),
+					}
+				}
+
+				// 统计概览
+				var pendingCount, todayCount int64
+				db.Model(&FeedbackRecord{}).Where("status = 'pending'").Count(&pendingCount)
+				today := time.Now().Format("2006-01-02")
+				db.Model(&FeedbackRecord{}).Where("date(created_at) = ?", today).Count(&todayCount)
+
+				c.JSON(200, gin.H{
+					"items":         result,
+					"total":         total,
+					"page":          page,
+					"page_size":     pageSize,
+					"pending_count": pendingCount,
+					"today_count":   todayCount,
+				})
+			})
+
+			admin.PUT("/feedback/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				var existing FeedbackRecord
+				if err := db.First(&existing, id).Error; err != nil {
+					c.JSON(404, gin.H{"error": "Not found"})
+					return
+				}
+				var req struct {
+					Status    string `json:"status"`
+					AdminNote string `json:"admin_note"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(400, gin.H{"error": "Invalid JSON"})
+					return
+				}
+				updates := map[string]interface{}{}
+				if req.Status != "" {
+					updates["status"] = req.Status
+				}
+				if req.AdminNote != "" {
+					updates["admin_note"] = req.AdminNote
+				}
+				if len(updates) > 0 {
+					db.Model(&existing).Updates(updates)
+				}
+				db.First(&existing, id)
+				c.JSON(200, gin.H{"status": "success", "item": existing})
+			})
+
+			admin.DELETE("/feedback/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				if err := db.Delete(&FeedbackRecord{}, id).Error; err != nil {
+					c.JSON(500, gin.H{"error": "Delete failed"})
+					return
+				}
+				c.JSON(200, gin.H{"status": "success"})
+			})
 		}
+
+		// AI 代理管理路由
+		initAIRoutes(admin)
 	}
+
+	// 客户端 AI 聊天端点（UA 校验，不需要 Basic Auth）
+	r.POST("/api/ai/chat", func(c *gin.Context) {
+		ua := c.GetHeader("User-Agent")
+		if len(ua) < 14 || ua[:14] != "AimerWT-Client" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Access Denied"})
+			return
+		}
+		handleAIChat(c)
+	})
+
+	// 客户端反馈提交（使用与 /telemetry 相同的 UA 校验）
+	r.POST("/feedback", func(c *gin.Context) {
+		var fb FeedbackRecord
+		if err := c.ShouldBindJSON(&fb); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid JSON"})
+			return
+		}
+
+		// 内容校验
+		if len(fb.Content) == 0 {
+			c.JSON(400, gin.H{"error": "Content is required"})
+			return
+		}
+		if len(fb.Content) > 500 {
+			fb.Content = fb.Content[:500]
+		}
+		if len(fb.Contact) > 100 {
+			fb.Contact = fb.Contact[:100]
+		}
+
+		// 频率限制：同一 machine_id 5 分钟内最多 1 条
+		if fb.MachineID != "" {
+			var recentCount int64
+			threshold := time.Now().Add(-5 * time.Minute)
+			db.Model(&FeedbackRecord{}).Where("machine_id = ? AND created_at > ?", fb.MachineID, threshold).Count(&recentCount)
+			if recentCount > 0 {
+				c.JSON(429, gin.H{"error": "请稍后再提交反馈（5分钟内限1条）"})
+				return
+			}
+		}
+
+		fb.Status = "pending"
+		if err := db.Create(&fb).Error; err != nil {
+			c.JSON(500, gin.H{"error": "保存失败"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "success", "feedback_id": fb.ID})
+	})
 
 	r.POST("/telemetry", func(c *gin.Context) {
 		if sysConfig.Maintenance && sysConfig.StopNewData {
@@ -413,12 +678,28 @@ func initRouter(r *gin.Engine) {
 			db.Model(&TelemetryRecord{}).Where("machine_id = ?", record.MachineID).Update("pending_command", "")
 		}
 
-		c.JSON(200, gin.H{
+		response := gin.H{
 			"status":       "success",
 			"sys_config":   clientConfig,
 			"user_command": pendingCmd,
 			"user_seq_id":  userSeqID,
-		})
+		}
+
+		// 构建广告轮播数据供客户端同步
+		if adItemsRaw := LoadConfig("ad_carousel_items"); adItemsRaw != "" {
+			adJson, _ := json.Marshal(LoadAdCarouselItems())
+			var parsed interface{}
+			json.Unmarshal(adJson, &parsed)
+			response["ad_carousel_items"] = parsed
+			response["ad_carousel_interval_ms"] = LoadAdCarouselInterval()
+		}
+
+		// 构建公告列表数据供客户端同步
+		var noticeItems []NoticeItem
+		db.Order("sort_order asc, id desc").Find(&noticeItems)
+		response["notice_items"] = noticeItems
+
+		c.JSON(200, response)
 	})
 
 	// WebSocket 端点（不需要 Basic Auth，使用自定义认证）

@@ -49,6 +49,41 @@ const app = {
         this.switchView('dashboard', document.querySelector('[data-view="dashboard"]'));
         // 启动定时刷新
         setInterval(() => this.fetchData(), 300000);
+
+        // 动态注入 Banner 菜单项（避免 index.html 服务器缓存问题）
+        this._injectBannerMenuItem();
+    },
+
+    /**
+     * 向侧边栏操控子菜单注入 Banner 入口
+     */
+    _injectBannerMenuItem() {
+        const controlSubmenu = document.getElementById('controlSubmenu');
+        if (!controlSubmenu) return;
+        // 避免重复注入
+        if (controlSubmenu.querySelector('[data-view="banner"]')) return;
+        // 定位到「公告栏」菜单项后面
+        const announcementItem = controlSubmenu.querySelector('[data-view="announcement"]');
+        if (!announcementItem) return;
+
+        const bannerItem = document.createElement('div');
+        bannerItem.className = 'submenu-item';
+        bannerItem.setAttribute('data-view', 'banner');
+        bannerItem.onclick = function (e) {
+            app.switchView('banner', bannerItem);
+            e.stopPropagation();
+        };
+        bannerItem.innerHTML = `
+            <div class="submenu-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+            </div>
+            <span>Banner</span>
+        `;
+        announcementItem.insertAdjacentElement('afterend', bannerItem);
     },
 
     /**
@@ -226,6 +261,18 @@ const app = {
                 break;
             case 'settings':
                 this.initSettings();
+                break;
+            case 'announcement':
+                this.initAnnouncement();
+                break;
+            case 'banner':
+                this.initBanner();
+                break;
+            case 'advertisement':
+                this.initAdvertisement();
+                break;
+            case 'feedback':
+                if (typeof this.initFeedback === 'function') this.initFeedback();
                 break;
             default:
                 break;
@@ -1065,7 +1112,9 @@ const app = {
                 </div>
                 <div class="form-group">
                     <label>推送范围</label>
-                    <input class="input" style="width: 100%;" id="alertScope" value="all" placeholder="例如: 2.0.1 或 all">
+                    <select class="select" style="width: 100%;" id="alertScope">
+                        <option value="all">all（全部用户）</option>
+                    </select>
                 </div>
             `;
         } else if (action === 'notice') {
@@ -1084,15 +1133,26 @@ const app = {
                 </div>
                 <div class="form-group">
                     <label>覆盖范围</label>
-                    <input class="input" style="width: 100%;" id="noticeScope" value="all" placeholder="例如: 2.0.1 或 all">
+                    <select class="select" style="width: 100%;" id="noticeScope">
+                        <option value="all">all（全部用户）</option>
+                    </select>
                 </div>
             `;
         } else if (action === 'update') {
             title = '更新提示';
             content = `
                 <div class="form-group">
-                    <label>推送范围 (输入版本号或 'all')</label>
-                    <input class="input" style="width: 100%;" id="updateScope" value="all" placeholder="例如: 2.0.1 或 all">
+                    <label>状态</label>
+                    <select class="select" style="width: 100%;" id="updateStatus">
+                        <option value="on">激活 (推送更新提示)</option>
+                        <option value="off">禁用 (停止推送)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>推送范围</label>
+                    <select class="select" style="width: 100%;" id="updateScope">
+                        <option value="all">all（全部用户）</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>推送内容</label>
@@ -1163,6 +1223,14 @@ const app = {
 
         if (action === 'maintenance') {
             this.syncMaintenanceReject();
+        }
+
+        // 弹窗中的 scope 下拉需要延迟填充（等 DOM 渲染）
+        if (['alert', 'notice', 'update'].includes(action)) {
+            setTimeout(() => {
+                const scopeIds = ['alertScope', 'noticeScope', 'updateScope'];
+                this._fillScopeSelects(scopeIds);
+            }, 50);
         }
     },
 
@@ -1323,6 +1391,7 @@ const app = {
             payload.content = document.getElementById('noticeContent').value;
             payload.scope = document.getElementById('noticeScope').value;
         } else if (action === 'update') {
+            payload.update_active = document.getElementById('updateStatus').value === 'on';
             payload.content = document.getElementById('updateContent').value;
             payload.url = document.getElementById('updateUrl').value;
             payload.scope = document.getElementById('updateScope').value;
@@ -1367,6 +1436,668 @@ const app = {
      */
     initControl() {
         // 控制视图特定初始化
+    },
+
+    /**
+     * 初始化公告栏管理视图，加载各通道的激活状态
+     */
+    initAnnouncement() {
+        this.loadAnnouncementStatus();
+        this.loadNoticeList();
+        this._fillScopeSelects([
+            'announcementNoticeScope',
+            'announcementAlertScope',
+            'announcementUpdateScope'
+        ]);
+    },
+
+    /**
+     * 从后端拉取版本分布列表并填充推送范围下拉框
+     */
+    async _fillScopeSelects(selectIds) {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/stats`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const versions = data.version_stats || data.version_options || [];
+            if (!versions.length) return;
+
+            selectIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const current = el.value;
+                // 保留第一个 all 选项，清除其余旧选项
+                while (el.options.length > 1) el.remove(1);
+                versions.forEach(item => {
+                    const opt = document.createElement('option');
+                    opt.value = item.name;
+                    opt.textContent = `${item.name}（${item.value} 人）`;
+                    el.appendChild(opt);
+                });
+                el.value = current || 'all';
+            });
+        } catch {
+            // 拉取失败保留默认 all
+        }
+    },
+
+    // ==================== Header Banner 管理 ====================
+
+    _bannerItems: [],
+    _bannerEditingIndex: -1,
+
+    initBanner() {
+        this._bannerItems = [];
+        this._bannerEditingIndex = -1;
+        this.loadBannerStatus();
+        this._fillScopeSelects(['bannerScope']);
+    },
+
+    toggleBannerActionFields() {
+        const type = document.getElementById('bannerEditActionType')?.value || 'none';
+        const urlGroup = document.getElementById('bannerEditUrlGroup');
+        const alertGroup = document.getElementById('bannerEditAlertGroup');
+        if (urlGroup) urlGroup.style.display = type === 'url' ? '' : 'none';
+        if (alertGroup) alertGroup.style.display = type === 'alert' ? 'flex' : 'none';
+    },
+
+    async loadBannerStatus() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/control`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const cfg = data.config || {};
+            const active = !!cfg.notice_active;
+            const dot = document.getElementById('bannerStatusDot');
+            const badge = document.getElementById('bannerStatusBadge');
+            if (dot) dot.style.background = active ? 'var(--secondary)' : 'var(--muted)';
+            if (badge) {
+                badge.textContent = active ? '推送中' : '未激活';
+                badge.style.background = active ? 'rgba(16,185,129,0.12)' : 'rgba(148,163,184,0.12)';
+                badge.style.color = active ? 'var(--secondary)' : 'var(--text-muted)';
+            }
+            if (document.getElementById('bannerInterval') && cfg.banner_interval)
+                document.getElementById('bannerInterval').value = cfg.banner_interval;
+
+            this._bannerItems = Array.isArray(cfg.banner_items) ? cfg.banner_items : [];
+            if (!this._bannerItems.length && cfg.notice_content) {
+                this._bannerItems = [{
+                    type: 'announcement', text: cfg.notice_content, icon: 'ri-megaphone-line',
+                    color: '', icon_color: '',
+                    action_type: cfg.notice_action_type || 'none',
+                    action_url: cfg.notice_action_url || '',
+                    action_title: cfg.notice_action_title || '',
+                    action_content: cfg.notice_action_content || ''
+                }];
+            }
+            this.renderBannerList();
+            this.cancelBannerEdit();
+        } catch {
+            this._bannerItems = [];
+            this.renderBannerList();
+        }
+    },
+
+    escapeHtmlSafe(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    },
+
+    renderBannerList() {
+        const container = document.getElementById('bannerListContainer');
+        const countEl = document.getElementById('bannerItemCount');
+        if (countEl) countEl.textContent = this._bannerItems.length + ' 条';
+        if (!container) return;
+        if (!this._bannerItems.length) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:60px 20px;"><p>暂无 Banner 数据</p><p style="font-size:12px;">点击右上角「添加」开始配置</p></div>';
+            return;
+        }
+        const tl = { announcement: '公告', slogan: '标语', update: '更新' };
+        const tc = { announcement: 'var(--primary)', slogan: 'var(--text-muted)', update: 'var(--secondary)' };
+        container.innerHTML = this._bannerItems.map((item, i) => {
+            const label = tl[item.type] || item.type;
+            const color = tc[item.type] || 'var(--text-muted)';
+            return `<div style="border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.02)'" onmouseout="this.style.background=''" onclick="app.editBannerItem(${i})">
+                <div style="width:28px;height:28px;border-radius:6px;background:${color}15;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                    <i class="${this.escapeHtmlSafe(item.icon || 'ri-megaphone-line')}" style="font-size:14px;color:${color};"></i>
+                </div>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtmlSafe(item.text || '(空)')}</div>
+                    <div style="font-size:11px;color:var(--text-muted);display:flex;gap:8px;margin-top:2px;">
+                        <span style="color:${color};">${label}</span>
+                        ${item.action_type && item.action_type !== 'none' ? '<span>· ' + (item.action_type === 'url' ? '链接' : '弹窗') + '</span>' : ''}
+                    </div>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                    <button class="btn" style="padding:3px 6px;font-size:10px;" onclick="event.stopPropagation();app.moveBannerItem(${i},-1)" ${i === 0 ? 'disabled' : ''}>↑</button>
+                    <button class="btn" style="padding:3px 6px;font-size:10px;" onclick="event.stopPropagation();app.moveBannerItem(${i},1)" ${i === this._bannerItems.length - 1 ? 'disabled' : ''}>↓</button>
+                    <button class="btn" style="padding:3px 6px;font-size:10px;color:var(--danger);" onclick="event.stopPropagation();app.deleteBannerItem(${i})">删</button>
+                </div>
+            </div>`;
+        }).join('');
+    },
+
+    addBannerItem() {
+        this._bannerEditingIndex = -1;
+        const t = document.getElementById('bannerEditTitle');
+        if (t) t.textContent = '添加 Banner';
+        const e = document.getElementById('bannerEditEmpty');
+        const f = document.getElementById('bannerEditForm');
+        if (e) e.style.display = 'none';
+        if (f) f.style.display = 'flex';
+        this.setVal('bannerEditType', 'announcement');
+        this.setVal('bannerEditIcon', 'ri-megaphone-line');
+        this.setVal('bannerEditText', '');
+        this.setVal('bannerEditColor', '');
+        this.setVal('bannerEditIconColor', '');
+        this.setVal('bannerEditActionType', 'none');
+        this.setVal('bannerEditUrl', '');
+        this.setVal('bannerEditAlertTitle', '');
+        this.setVal('bannerEditAlertContent', '');
+        this.toggleBannerActionFields();
+    },
+
+    editBannerItem(index) {
+        const item = this._bannerItems[index];
+        if (!item) return;
+        this._bannerEditingIndex = index;
+        const t = document.getElementById('bannerEditTitle');
+        if (t) t.textContent = '编辑 #' + (index + 1);
+        const e = document.getElementById('bannerEditEmpty');
+        const f = document.getElementById('bannerEditForm');
+        if (e) e.style.display = 'none';
+        if (f) f.style.display = 'flex';
+        this.setVal('bannerEditType', item.type || 'announcement');
+        this.setVal('bannerEditIcon', item.icon || 'ri-megaphone-line');
+        this.setVal('bannerEditText', item.text || '');
+        this.setVal('bannerEditColor', item.color || '');
+        this.setVal('bannerEditIconColor', item.icon_color || '');
+        this.setVal('bannerEditActionType', item.action_type || 'none');
+        this.setVal('bannerEditUrl', item.action_url || '');
+        this.setVal('bannerEditAlertTitle', item.action_title || '');
+        this.setVal('bannerEditAlertContent', item.action_content || '');
+        this.toggleBannerActionFields();
+    },
+
+    cancelBannerEdit() {
+        this._bannerEditingIndex = -1;
+        const e = document.getElementById('bannerEditEmpty');
+        const f = document.getElementById('bannerEditForm');
+        if (e) e.style.display = '';
+        if (f) f.style.display = 'none';
+        const t = document.getElementById('bannerEditTitle');
+        if (t) t.textContent = '选择或新建 Banner';
+    },
+
+    saveBannerItem() {
+        const text = (document.getElementById('bannerEditText')?.value || '').trim();
+        if (!text) { this.showAlert('请输入显示文字', 'warning'); return; }
+        const item = {
+            type: document.getElementById('bannerEditType')?.value || 'announcement',
+            text, icon: (document.getElementById('bannerEditIcon')?.value || '').trim() || 'ri-megaphone-line',
+            color: (document.getElementById('bannerEditColor')?.value || '').trim(),
+            icon_color: (document.getElementById('bannerEditIconColor')?.value || '').trim(),
+            action_type: document.getElementById('bannerEditActionType')?.value || 'none',
+            action_url: (document.getElementById('bannerEditUrl')?.value || '').trim(),
+            action_title: (document.getElementById('bannerEditAlertTitle')?.value || '').trim(),
+            action_content: (document.getElementById('bannerEditAlertContent')?.value || '').trim()
+        };
+        if (this._bannerEditingIndex >= 0) this._bannerItems[this._bannerEditingIndex] = item;
+        else this._bannerItems.push(item);
+        this.renderBannerList();
+        this.cancelBannerEdit();
+        this.showAlert('已保存，点击「发布 Banner」生效', 'success');
+    },
+
+    deleteBannerItem(index) {
+        this._bannerItems.splice(index, 1);
+        this.renderBannerList();
+        this.cancelBannerEdit();
+    },
+
+    moveBannerItem(index, dir) {
+        const t = index + dir;
+        if (t < 0 || t >= this._bannerItems.length) return;
+        [this._bannerItems[index], this._bannerItems[t]] = [this._bannerItems[t], this._bannerItems[index]];
+        this.renderBannerList();
+    },
+
+    async submitBanner() {
+        if (!this._bannerItems.length) { this.showAlert('请先添加至少一条 Banner', 'warning'); return; }
+        const interval = parseInt(document.getElementById('bannerInterval')?.value) || 6;
+        const payload = {
+            action: 'notice', notice_active: true,
+            scope: document.getElementById('bannerScope')?.value || 'all',
+            banner_items: this._bannerItems, banner_interval: interval,
+            content: this._bannerItems[0]?.text || '',
+            notice_action_type: this._bannerItems[0]?.action_type || 'none',
+            notice_action_url: this._bannerItems[0]?.action_url || '',
+            notice_action_title: this._bannerItems[0]?.action_title || '',
+            notice_action_content: this._bannerItems[0]?.action_content || ''
+        };
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/control`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('服务器返回 ' + res.status);
+            await res.json();
+            this.showAlert(`Banner 已发布（${this._bannerItems.length} 条，${interval}s 轮播）`, 'success');
+            this.loadBannerStatus();
+        } catch (error) { this.showAlert('发布失败: ' + error.message, 'danger'); }
+    },
+
+    async clearBanner() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/control`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'notice', notice_active: false, content: '', scope: 'all', banner_items: [] })
+            });
+            if (!res.ok) throw new Error('服务器返回 ' + res.status);
+            await res.json();
+            this._bannerItems = [];
+            this.renderBannerList();
+            this.cancelBannerEdit();
+            this.showAlert('Banner 已清除', 'success');
+            this.loadBannerStatus();
+        } catch (error) { this.showAlert('清除失败: ' + error.message, 'danger'); }
+    },
+
+    /**
+     * 加载各推送通道当前状态并更新通道状态面板
+     */
+    async loadAnnouncementStatus() {
+        const setChannel = (name, active) => {
+            const dot = document.getElementById(`channelDot${name}`);
+            const badge = document.getElementById(`channelBadge${name}`);
+            if (dot) {
+                dot.style.background = active ? 'var(--secondary)' : 'var(--muted)';
+            }
+            if (badge) {
+                badge.textContent = active ? '已激活' : '未激活';
+                badge.style.background = active
+                    ? 'rgba(16, 185, 129, 0.12)'
+                    : 'rgba(148, 163, 184, 0.15)';
+                badge.style.color = active ? 'var(--secondary)' : 'var(--text-muted)';
+            }
+        };
+
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/control`);
+            if (res.ok) {
+                const data = await res.json();
+                const cfg = data.config || {};
+                setChannel('Alert', !!cfg.alert_active);
+                setChannel('Update', !!cfg.update_active);
+                this.setVal('announcementAlertStatus', cfg.alert_active ? 'on' : 'off');
+                this.setVal('announcementUpdateStatus', cfg.update_active ? 'on' : 'off');
+            } else {
+                setChannel('Alert', false);
+                setChannel('Update', false);
+            }
+        } catch {
+            setChannel('Alert', false);
+            setChannel('Update', false);
+        }
+    },
+
+    /**
+     * 从公告栏管理页面提交推送指令，复用 /admin/control API
+     */
+    async submitAnnouncement(type) {
+        const payload = { action: type };
+
+        if (type === 'notice') {
+            payload.notice_active = document.getElementById('announcementNoticeStatus')?.value === 'on';
+            payload.content = document.getElementById('announcementNoticeContent')?.value || '';
+            payload.scope = document.getElementById('announcementNoticeScope')?.value || 'all';
+        } else if (type === 'alert') {
+            payload.alert_active = document.getElementById('announcementAlertStatus')?.value === 'on';
+            payload.title = document.getElementById('announcementAlertTitle')?.value || '';
+            payload.content = document.getElementById('announcementAlertContent')?.value || '';
+            payload.scope = document.getElementById('announcementAlertScope')?.value || 'all';
+        } else if (type === 'update') {
+            payload.update_active = document.getElementById('announcementUpdateStatus')?.value === 'on';
+            payload.content = document.getElementById('announcementUpdateContent')?.value || '';
+            payload.url = document.getElementById('announcementUpdateUrl')?.value || '';
+            payload.scope = document.getElementById('announcementUpdateScope')?.value || 'all';
+        }
+
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/control`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('服务器返回 ' + res.status);
+            await res.json();
+            this.showAlert('指令已下发成功', 'success');
+            this.loadAnnouncementStatus();
+        } catch (error) {
+            this.showAlert('推送失败: ' + error.message, 'danger');
+        }
+    },
+
+    // ==================== 公告列表管理 ====================
+
+    _noticeItems: [],
+    _noticeEditingId: null,
+
+    async loadNoticeList() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/notices`);
+            if (!res.ok) throw new Error('load failed');
+            const data = await res.json();
+            this._noticeItems = data.items || [];
+            this.renderNoticeList();
+            this.cancelNoticeEdit();
+        } catch {
+            this._noticeItems = [];
+            this.renderNoticeList();
+        }
+    },
+
+    renderNoticeList() {
+        const container = document.getElementById('noticeItemList');
+        if (!container) return;
+        if (!this._noticeItems.length) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px;"><p>\u6682\u65e0\u516c\u544a\u6570\u636e</p><p style="font-size:12px;">\u70b9\u51fb\u201c\u65b0\u5efa\u516c\u544a\u201d\u5f00\u59cb\u6dfb\u52a0</p></div>';
+            return;
+        }
+        const typeColors = { urgent: 'var(--danger)', update: 'var(--primary)', event: 'rgb(124,58,237)', bonus: 'var(--secondary)', normal: 'var(--text-muted)' };
+        container.innerHTML = this._noticeItems.map((item, idx) => {
+            const color = typeColors[item.type] || 'var(--text-muted)';
+            const pinIcon = item.is_pinned ? '<span style="color:var(--warning);font-size:11px;margin-left:4px;" title="\u7f6e\u9876">\u2b50</span>' : '';
+            const isFirst = idx === 0;
+            const isLast = idx === this._noticeItems.length - 1;
+            return `<div style="border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.02)'" onmouseout="this.style.background=''" onclick="app.editNoticeItem(${item.id})">
+                <span style="font-size:11px;color:var(--text-muted);width:20px;text-align:center;flex-shrink:0;">${idx + 1}</span>
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+                <span style="font-size:11px;padding:1px 8px;border-radius:4px;background:rgba(0,0,0,0.04);color:${color};flex-shrink:0;">${this.escapeHtmlSafe(item.tag || item.type)}</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtmlSafe(item.title)}${pinIcon}</div>
+                    <div style="font-size:11px;color:var(--text-muted);">${this.escapeHtmlSafe(item.date || '')}</div>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                    <button class="btn" style="padding:3px 6px;font-size:10px;" onclick="event.stopPropagation();app.moveNoticeItem(${idx},-1)" ${isFirst ? 'disabled' : ''}>↑</button>
+                    <button class="btn" style="padding:3px 6px;font-size:10px;" onclick="event.stopPropagation();app.moveNoticeItem(${idx},1)" ${isLast ? 'disabled' : ''}>↓</button>
+                    <button class="btn" style="padding:3px 6px;font-size:10px;color:var(--danger);" onclick="event.stopPropagation();app.deleteNoticeItem(${item.id})">\u5220\u9664</button>
+                </div>
+            </div>`;
+        }).join('');
+    },
+
+    /**
+     * 交换两条公告的排序位置，通过重新提交调整后的顺序
+     */
+    async moveNoticeItem(index, dir) {
+        const target = index + dir;
+        if (target < 0 || target >= this._noticeItems.length) return;
+        // 本地交换
+        [this._noticeItems[index], this._noticeItems[target]] = [this._noticeItems[target], this._noticeItems[index]];
+        this.renderNoticeList();
+        // 按新顺序逐条 PUT 更新 order 字段
+        try {
+            for (let i = 0; i < this._noticeItems.length; i++) {
+                await fetch(`${this.config.apiBase}/admin/notices/${this._noticeItems[i].id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...this._noticeItems[i], order: i })
+                });
+            }
+        } catch { /* 排序失败静默处理，刷新即恢复 */ }
+    },
+
+    addNoticeItem() {
+        this._noticeEditingId = null;
+        const titleEl = document.getElementById('noticeEditTitle');
+        if (titleEl) titleEl.textContent = '\u65b0\u5efa\u516c\u544a';
+        const emptyEl = document.getElementById('noticeEditEmpty');
+        const formEl = document.getElementById('noticeEditForm');
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (formEl) formEl.style.display = '';
+        this.setVal('noticeEditType', 'normal');
+        this.setVal('noticeEditTag', '');
+        this.setVal('noticeEditItemTitle', '');
+        this.setVal('noticeEditDate', new Date().toLocaleDateString('zh-CN'));
+        this.setVal('noticeEditSummary', '');
+        this.setVal('noticeEditContent', '');
+        const pinnedEl = document.getElementById('noticeEditPinned');
+        if (pinnedEl) pinnedEl.checked = false;
+    },
+
+    editNoticeItem(id) {
+        const item = this._noticeItems.find(x => x.id === id);
+        if (!item) return;
+        this._noticeEditingId = id;
+        const titleEl = document.getElementById('noticeEditTitle');
+        if (titleEl) titleEl.textContent = '\u7f16\u8f91: ' + (item.title || '');
+        const emptyEl = document.getElementById('noticeEditEmpty');
+        const formEl = document.getElementById('noticeEditForm');
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (formEl) formEl.style.display = '';
+        this.setVal('noticeEditType', item.type || 'normal');
+        this.setVal('noticeEditTag', item.tag || '');
+        this.setVal('noticeEditItemTitle', item.title || '');
+        this.setVal('noticeEditDate', item.date || '');
+        this.setVal('noticeEditSummary', item.summary || '');
+        this.setVal('noticeEditContent', item.content || '');
+        const pinnedEl = document.getElementById('noticeEditPinned');
+        if (pinnedEl) pinnedEl.checked = !!item.is_pinned;
+    },
+
+    cancelNoticeEdit() {
+        this._noticeEditingId = null;
+        const titleEl = document.getElementById('noticeEditTitle');
+        if (titleEl) titleEl.textContent = '\u9009\u62e9\u6216\u65b0\u5efa\u516c\u544a';
+        const emptyEl = document.getElementById('noticeEditEmpty');
+        const formEl = document.getElementById('noticeEditForm');
+        if (emptyEl) emptyEl.style.display = '';
+        if (formEl) formEl.style.display = 'none';
+    },
+
+    async saveNoticeItem() {
+        const payload = {
+            type: document.getElementById('noticeEditType')?.value || 'normal',
+            tag: (document.getElementById('noticeEditTag')?.value || '').trim(),
+            title: (document.getElementById('noticeEditItemTitle')?.value || '').trim(),
+            date: (document.getElementById('noticeEditDate')?.value || '').trim(),
+            summary: (document.getElementById('noticeEditSummary')?.value || '').trim(),
+            content: (document.getElementById('noticeEditContent')?.value || '').trim(),
+            is_pinned: !!document.getElementById('noticeEditPinned')?.checked
+        };
+        if (!payload.title) { this.showAlert('\u8bf7\u586b\u5199\u516c\u544a\u6807\u9898', 'warning'); return; }
+        if (!payload.tag) {
+            const tagMap = { update: '\u66f4\u65b0', urgent: '\u7d27\u6025', event: '\u6d3b\u52a8', bonus: '\u798f\u5229', normal: '\u65e5\u5e38' };
+            payload.tag = tagMap[payload.type] || '\u65e5\u5e38';
+        }
+        try {
+            const isEdit = this._noticeEditingId !== null;
+            const url = isEdit
+                ? `${this.config.apiBase}/admin/notices/${this._noticeEditingId}`
+                : `${this.config.apiBase}/admin/notices`;
+            const method = isEdit ? 'PUT' : 'POST';
+            const res = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('\u670d\u52a1\u5668\u8fd4\u56de ' + res.status);
+            await res.json();
+            this.showAlert(isEdit ? '\u516c\u544a\u5df2\u66f4\u65b0' : '\u516c\u544a\u5df2\u521b\u5efa', 'success');
+            this.loadNoticeList();
+        } catch (error) {
+            this.showAlert('\u4fdd\u5b58\u5931\u8d25: ' + error.message, 'danger');
+        }
+    },
+
+    async deleteNoticeItem(id) {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/notices/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('\u670d\u52a1\u5668\u8fd4\u56de ' + res.status);
+            this.showAlert('\u516c\u544a\u5df2\u5220\u9664', 'success');
+            this.loadNoticeList();
+        } catch (error) {
+            this.showAlert('\u5220\u9664\u5931\u8d25: ' + error.message, 'danger');
+        }
+    },
+
+    // ==================== 广告轮播管理 ====================
+
+    _adItems: [],
+    _adEditingIndex: -1,
+
+    initAdvertisement() {
+        this._adItems = [];
+        this._adEditingIndex = -1;
+        this.loadAdCarousel();
+    },
+
+    async loadAdCarousel() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ad-carousel`);
+            if (!res.ok) throw new Error('load failed');
+            const data = await res.json();
+            this._adItems = data.items || [];
+            const intervalEl = document.getElementById('adIntervalMs');
+            if (intervalEl && data.interval_ms) intervalEl.value = data.interval_ms;
+            this.renderAdList();
+            this.cancelAdEdit();
+        } catch {
+            this._adItems = [];
+            this.renderAdList();
+        }
+    },
+
+    renderAdList() {
+        const container = document.getElementById('adCarouselList');
+        if (!container) return;
+        if (!this._adItems.length) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px;"><p>\u6682\u65e0\u5e7f\u544a\u6570\u636e</p><p style="font-size:12px;">\u70b9\u51fb\u53f3\u4e0a\u89d2\u201c\u6dfb\u52a0\u5e7f\u544a\u201d\u5f00\u59cb\u914d\u7f6e</p></div>';
+            return;
+        }
+        container.innerHTML = this._adItems.map((item, i) => {
+            const isFirst = i === 0;
+            const isLast = i === this._adItems.length - 1;
+            return `<div style="border-bottom:1px solid var(--border);padding:14px 20px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.02)'" onmouseout="this.style.background=''" onclick="app.editAdItem(${i})">
+                <div style="width:64px;height:40px;border-radius:6px;overflow:hidden;flex-shrink:0;background:var(--border);display:flex;align-items:center;justify-content:center;">
+                    <img src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;">
+                    <span style="font-size:10px;color:var(--text-muted)">#${i + 1}</span>
+                </div>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtmlSafe(item.id || '\u672a\u547d\u540d')}</div>
+                    <div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtmlSafe(item.url || '-')}</div>
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                    <button class="btn" style="padding:4px 8px;font-size:11px;" onclick="event.stopPropagation();app.moveAdItem(${i},-1)" ${isFirst ? 'disabled' : ''}>\u2191</button>
+                    <button class="btn" style="padding:4px 8px;font-size:11px;" onclick="event.stopPropagation();app.moveAdItem(${i},1)" ${isLast ? 'disabled' : ''}>\u2193</button>
+                    <button class="btn" style="padding:4px 8px;font-size:11px;color:var(--danger);" onclick="event.stopPropagation();app.deleteAdItem(${i})">\u5220\u9664</button>
+                </div>
+            </div>`;
+        }).join('');
+    },
+
+    escapeHtmlSafe(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    },
+
+    addAdItem() {
+        this._adEditingIndex = -1;
+        const titleEl = document.getElementById('adEditTitle');
+        if (titleEl) titleEl.textContent = '\u6dfb\u52a0\u5e7f\u544a';
+        const emptyEl = document.getElementById('adEditEmpty');
+        const formEl = document.getElementById('adEditForm');
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (formEl) formEl.style.display = '';
+        this.setVal('adEditId', 'ad_' + Date.now());
+        this.setVal('adEditImage', '');
+        this.setVal('adEditAlt', '');
+        this.setVal('adEditUrl', '');
+    },
+
+    editAdItem(index) {
+        const item = this._adItems[index];
+        if (!item) return;
+        this._adEditingIndex = index;
+        const titleEl = document.getElementById('adEditTitle');
+        if (titleEl) titleEl.textContent = '\u7f16\u8f91: ' + (item.id || '');
+        const emptyEl = document.getElementById('adEditEmpty');
+        const formEl = document.getElementById('adEditForm');
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (formEl) formEl.style.display = '';
+        this.setVal('adEditId', item.id || '');
+        this.setVal('adEditImage', item.image || '');
+        this.setVal('adEditAlt', item.alt || '');
+        this.setVal('adEditUrl', item.url || '');
+    },
+
+    cancelAdEdit() {
+        this._adEditingIndex = -1;
+        const titleEl = document.getElementById('adEditTitle');
+        if (titleEl) titleEl.textContent = '\u9009\u62e9\u6216\u6dfb\u52a0\u5e7f\u544a';
+        const emptyEl = document.getElementById('adEditEmpty');
+        const formEl = document.getElementById('adEditForm');
+        if (emptyEl) emptyEl.style.display = '';
+        if (formEl) formEl.style.display = 'none';
+    },
+
+    setVal(id, val) {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+    },
+
+    saveAdItem() {
+        const item = {
+            id: (document.getElementById('adEditId')?.value || '').trim(),
+            image: (document.getElementById('adEditImage')?.value || '').trim(),
+            alt: (document.getElementById('adEditAlt')?.value || '').trim(),
+            url: (document.getElementById('adEditUrl')?.value || '').trim()
+        };
+        if (!item.id) { this.showAlert('\u8bf7\u586b\u5199\u5e7f\u544a ID', 'warning'); return; }
+        if (this._adEditingIndex >= 0) {
+            this._adItems[this._adEditingIndex] = item;
+        } else {
+            this._adItems.push(item);
+        }
+        this.renderAdList();
+        this.cancelAdEdit();
+        this.showAlert('\u5df2\u66f4\u65b0\u672c\u5730\u5217\u8868\uff0c\u70b9\u51fb\u201c\u4fdd\u5b58\u5168\u90e8\u914d\u7f6e\u201d\u63d0\u4ea4\u5230\u670d\u52a1\u5668', 'success');
+    },
+
+    deleteAdItem(index) {
+        this._adItems.splice(index, 1);
+        this.renderAdList();
+        if (this._adEditingIndex === index) this.cancelAdEdit();
+        this.showAlert('\u5df2\u5220\u9664\uff0c\u70b9\u51fb\u201c\u4fdd\u5b58\u5168\u90e8\u914d\u7f6e\u201d\u63d0\u4ea4\u5230\u670d\u52a1\u5668', 'success');
+    },
+
+    moveAdItem(index, direction) {
+        const newIndex = index + direction;
+        if (newIndex < 0 || newIndex >= this._adItems.length) return;
+        const temp = this._adItems[index];
+        this._adItems[index] = this._adItems[newIndex];
+        this._adItems[newIndex] = temp;
+        this.renderAdList();
+    },
+
+    async saveAdCarouselAll() {
+        const intervalMs = parseInt(document.getElementById('adIntervalMs')?.value) || 4500;
+        const payload = { items: this._adItems, interval_ms: intervalMs };
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ad-carousel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('\u670d\u52a1\u5668\u8fd4\u56de ' + res.status);
+            await res.json();
+            this.showAlert('\u5e7f\u544a\u914d\u7f6e\u5df2\u4fdd\u5b58\u5230\u670d\u52a1\u5668', 'success');
+        } catch (error) {
+            this.showAlert('\u4fdd\u5b58\u5931\u8d25: ' + error.message, 'danger');
+        }
     },
 
     /**
@@ -2487,141 +3218,195 @@ const app = {
     },
 
     /**
-     * API 提供商配置
+     * 加载 AI 配置（从后端获取）
      */
-    providerConfigs: {
-        openai: {
-            url: 'https://api.openai.com/v1',
-            models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
-        },
-        anthropic: {
-            url: 'https://api.anthropic.com/v1',
-            models: ['claude-3-5-sonnet', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku']
-        },
-        deepseek: {
-            url: 'https://api.deepseek.com/v1',
-            models: ['deepseek-chat', 'deepseek-coder']
-        },
-        moonshot: {
-            url: 'https://api.moonshot.cn/v1',
-            models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k']
-        },
-        zhipu: {
-            url: 'https://open.bigmodel.cn/api/paas/v4',
-            models: ['glm-4', 'glm-4-flash', 'glm-3-turbo']
-        },
-        qwen: {
-            url: 'https://dashscope.aliyuncs.com/api/v1',
-            models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext']
-        },
-        custom: {
-            url: '',
-            models: ['custom-model']
+    async loadAIConfig() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/config`);
+            const data = await res.json();
+            const cfg = data.config;
+
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+            const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+
+            setVal('aiProvider', cfg.provider || 'zhipu');
+            setVal('aiApiUrl', cfg.api_url || '');
+            setVal('aiModel', cfg.model || 'glm-4.6v');
+            setVal('aiMaxTokens', cfg.max_tokens || 2048);
+            setVal('maxTokensSlider', cfg.max_tokens || 2048);
+            setVal('aiTemperature', (cfg.temperature || 0.7).toFixed(2));
+            setVal('temperatureSlider', Math.round((cfg.temperature || 0.7) * 100));
+            setVal('aiMaxHistory', cfg.max_history || 30);
+            setChecked('aiEnabled', cfg.enabled !== false);
+            setVal('aiSystemPrompt', cfg.system_prompt || '');
+            setVal('aiHourlyLimit', cfg.hourly_limit || 20);
+
+            const keyStatus = document.getElementById('aiApiKeyStatus');
+            if (keyStatus) {
+                keyStatus.innerHTML = data.has_api_key
+                    ? '<span style="color: var(--secondary);">✓ 已配置</span>　<span style="color: var(--text-muted);">' + data.api_key + '</span>'
+                    : '<span style="color: var(--danger);">✗ 未配置</span>　请设置环境变量 AI_API_KEY';
+            }
+
+            this.loadAIBans();
+            this.loadAIStats();
+        } catch (err) {
+            console.error('加载AI配置失败:', err);
+            this.showAlert('加载AI配置失败: ' + err.message, 'danger');
         }
     },
 
     /**
-     * 切换 API 提供商
+     * 加载 AI 对话统计（今日/总计）
      */
-    onProviderChange() {
-        const provider = document.getElementById('aiProvider')?.value;
-        const config = this.providerConfigs[provider];
-        if (!config) return;
-
-        document.getElementById('aiApiUrl').value = config.url;
-
-        const modelSelect = document.getElementById('aiModel');
-        if (modelSelect) {
-            modelSelect.innerHTML = config.models.map(m => `<option value="${m}">${m}</option>`).join('');
+    async loadAIStats() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/usage?days=1`);
+            const data = await res.json();
+            const setNum = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = (val || 0).toLocaleString();
+            };
+            setNum('aiTodayRequests', data.today_requests);
+            setNum('aiTotalRequests', data.total_requests);
+            setNum('aiTodayTokens', data.today_tokens);
+        } catch (err) {
+            console.error('加载AI统计失败:', err);
         }
     },
 
     /**
-     * 切换 API Key 可见性
+     * 手动检测 AI API 连接状态
      */
-    toggleApiKeyVisibility() {
-        const input = document.getElementById('aiApiKey');
-        const btn = event.target;
-        if (!input) return;
+    async testAIConnection() {
+        const btn = document.getElementById('aiTestBtn');
+        const status = document.getElementById('aiApiKeyStatus');
+        if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }
+        if (status) status.innerHTML = '<span style="color: var(--text-muted);">正在检测连接...</span>';
 
-        if (input.type === 'password') {
-            input.type = 'text';
-            btn.textContent = '隐藏';
-        } else {
-            input.type = 'password';
-            btn.textContent = '显示';
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/test-connection`, { method: 'POST' });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                status.innerHTML = '<span style="color: var(--secondary);">✓ 连接正常</span>';
+            } else if (data.status === 'no_key') {
+                status.innerHTML = '<span style="color: var(--danger);">✗ 未配置 API Key</span>';
+            } else {
+                status.innerHTML = '<span style="color: var(--warning);">⚠ ' + (data.message || '连接异常') + '</span>';
+            }
+        } catch (err) {
+            if (status) status.innerHTML = '<span style="color: var(--danger);">✗ 检测失败: ' + err.message + '</span>';
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '检测连接'; }
         }
     },
 
     /**
-     * 更新最大 Tokens 显示
+     * 保存 AI 配置（提交到后端）
      */
-    updateMaxTokensDisplay() {
-        const slider = document.getElementById('maxTokensSlider');
-        const input = document.getElementById('maxTokens');
-        if (slider && input) {
-            input.value = slider.value;
-        }
-    },
-
-    /**
-     * 更新温度显示
-     */
-    updateTemperatureDisplay() {
-        const slider = document.getElementById('temperatureSlider');
-        const input = document.getElementById('temperature');
-        if (slider && input) {
-            input.value = (slider.value / 100).toFixed(2);
-        }
-    },
-
-    /**
-     * 保存 AI 配置
-     */
-    saveAIConfig() {
+    async saveAIConfig() {
+        const getVal = (id) => document.getElementById(id)?.value || '';
         const config = {
-            provider: document.getElementById('aiProvider')?.value,
-            apiUrl: document.getElementById('aiApiUrl')?.value,
-            apiKey: document.getElementById('aiApiKey')?.value,
-            model: document.getElementById('aiModel')?.value,
-            maxTokens: parseInt(document.getElementById('maxTokens')?.value) || 4096,
-            temperature: parseFloat(document.getElementById('temperature')?.value) || 0.7,
-            contextWindow: parseInt(document.getElementById('contextWindow')?.value) || 8192,
-            requestTimeout: parseInt(document.getElementById('requestTimeout')?.value) || 30,
-            enableAI: document.getElementById('enableAI')?.checked ?? true,
-            streamOutput: document.getElementById('streamOutput')?.checked ?? true,
-            systemPrompt: document.getElementById('systemPrompt')?.value || '',
-            dailyLimit: parseInt(document.getElementById('dailyLimit')?.value) || 100,
-            perRequestLimit: parseInt(document.getElementById('perRequestLimit')?.value) || 2048,
-            cooldownTime: parseInt(document.getElementById('cooldownTime')?.value) || 3
+            enabled: document.getElementById('aiEnabled')?.checked ?? true,
+            provider: getVal('aiProvider') || 'zhipu',
+            api_url: getVal('aiApiUrl'),
+            model: getVal('aiModel') || 'glm-4.6v',
+            system_prompt: getVal('aiSystemPrompt'),
+            max_tokens: parseInt(getVal('aiMaxTokens')) || 2048,
+            temperature: parseFloat(getVal('aiTemperature')) || 0.7,
+            hourly_limit: parseInt(getVal('aiHourlyLimit')) || 20,
+            max_history: parseInt(getVal('aiMaxHistory')) || 30,
         };
 
-        this.state.aiConfig = config;
-        this.showAlert('AI 配置已保存', 'success');
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            if (res.ok) {
+                this.showAlert('AI 配置已保存', 'success');
+            } else {
+                throw new Error('HTTP ' + res.status);
+            }
+        } catch (err) {
+            this.showAlert('保存失败: ' + err.message, 'danger');
+        }
     },
 
     /**
-     * 重置 AI 配置
+     * 加载 AI 封禁列表
      */
-    resetAIConfig() {
-        document.getElementById('aiProvider').value = 'openai';
-        document.getElementById('aiApiUrl').value = 'https://api.openai.com/v1';
-        document.getElementById('aiApiKey').value = '';
-        document.getElementById('maxTokens').value = '4096';
-        document.getElementById('maxTokensSlider').value = 4096;
-        document.getElementById('temperature').value = '0.7';
-        document.getElementById('temperatureSlider').value = 70;
-        document.getElementById('contextWindow').value = '8192';
-        document.getElementById('requestTimeout').value = '30';
-        document.getElementById('enableAI').checked = true;
-        document.getElementById('streamOutput').checked = true;
-        document.getElementById('systemPrompt').value = '你是一个专业的游戏助手，帮助用户解答关于游戏的问题。请用简洁友好的方式回答用户的问题。';
-        document.getElementById('dailyLimit').value = '100';
-        document.getElementById('perRequestLimit').value = '2048';
-        document.getElementById('cooldownTime').value = '3';
+    async loadAIBans() {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/bans`);
+            const data = await res.json();
+            const bans = data.bans || [];
 
-        this.onProviderChange();
-        this.showAlert('已重置为默认配置', 'success');
+            const table = document.getElementById('aiBanTable');
+            const empty = document.getElementById('aiBanEmpty');
+            if (!table) return;
+
+            if (bans.length === 0) {
+                table.innerHTML = '';
+                if (empty) empty.style.display = 'block';
+                return;
+            }
+            if (empty) empty.style.display = 'none';
+
+            table.innerHTML = bans.map(function(b) {
+                return '<tr>' +
+                    '<td style="font-family: monospace; font-size: 12px;">' + b.machine_id + '</td>' +
+                    '<td>' + (b.alias || '-') + '</td>' +
+                    '<td>' + (b.reason || '-') + '</td>' +
+                    '<td>' + b.created_at + '</td>' +
+                    '<td><button class="btn" style="padding: 4px 8px; font-size: 12px; color: var(--danger);" onclick="app.removeAIBan(' + b.id + ')">解封</button></td>' +
+                '</tr>';
+            }).join('');
+        } catch (err) {
+            console.error('加载封禁列表失败:', err);
+        }
+    },
+
+    /**
+     * 添加 AI 封禁
+     */
+    async addAIBan() {
+        const machineId = document.getElementById('banMachineId')?.value?.trim();
+        const reason = document.getElementById('banReason')?.value?.trim();
+        if (!machineId) { this.showAlert('请输入 Machine ID', 'warning'); return; }
+
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/bans`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ machine_id: machineId, reason: reason || '管理员封禁' })
+            });
+            if (res.ok) {
+                this.showAlert('已封禁该用户的 AI 功能', 'success');
+                document.getElementById('banMachineId').value = '';
+                document.getElementById('banReason').value = '';
+                this.loadAIBans();
+            } else {
+                const data = await res.json();
+                this.showAlert('封禁失败: ' + (data.error || ''), 'danger');
+            }
+        } catch (err) {
+            this.showAlert('封禁失败: ' + err.message, 'danger');
+        }
+    },
+
+    /**
+     * 解除 AI 封禁
+     */
+    async removeAIBan(id) {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/ai/bans/${id}`, { method: 'DELETE' });
+            if (res.ok) { this.showAlert('已解除封禁', 'success'); this.loadAIBans(); }
+        } catch (err) {
+            this.showAlert('操作失败: ' + err.message, 'danger');
+        }
     },
 
     /**
@@ -2667,7 +3452,7 @@ const app = {
      */
     async fetchAIUsageData() {
         try {
-            const res = await fetch(`${this.config.apiBase}/admin/ai-usage`);
+            const res = await fetch(`${this.config.apiBase}/admin/ai/usage`);
             const data = await res.json();
             return data;
         } catch (err) {
@@ -2920,13 +3705,45 @@ const app = {
      */
     async initAIUsagePage() {
         const data = await this.fetchAIUsageData();
+        if (!data) return;
+
         this.state.aiUsageData = data;
-        this.state.aiUsageStats = this.calculateAIUsageStats(data);
-        this.state.aiModelDistribution = this.calculateModelDistribution(data);
-        
+        this.state.aiUsageStats = {
+            totalTokens: data.total_tokens || 0,
+            totalMessages: data.total_requests || 0,
+            activeUsers: data.active_users || 0,
+            violations: 0,
+            tokensChange: 0, messagesChange: 0, usersChange: 0, violationsChange: 0
+        };
+        this.state.aiModelDistribution = [];
+
+        // 转化趋势数据
+        const trend = (data.trend || []).map(d => ({
+            date: (d.date || '').slice(5),
+            tokens: d.tokens || 0,
+            requests: d.requests || 0,
+            users: d.users || 0
+        }));
+        this.state.aiUsageData.trendData = trend;
+
+        // 转化用户排行
+        const users = (data.user_ranking || []).map((u, i) => ({
+            rank: i + 1,
+            name: u.alias || '未命名',
+            hwid: u.machine_id || '',
+            messages: u.requests || 0,
+            tokens: u.tokens || 0,
+            avgTime: '-',
+            lastTime: u.last_used ? String(u.last_used).slice(0, 16) : '-',
+            status: u.banned ? '已封禁' : '正常',
+            avatar: (u.alias || '?')[0],
+            avatarColor: u.banned ? '#ef4444' : '#2563eb',
+            customLimit: u.custom_limit || null
+        }));
+        this.state.aiUsageData.users = users;
+
         this.renderAIUsageStats();
         this.renderAIUsageChart('tokens');
-        this.renderModelDistribution();
         this.renderUsageUserTable();
     },
 

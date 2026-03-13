@@ -84,6 +84,8 @@ const DEFAULT_THEME = {
     "--notice-update-text": "#3B82F6",
     "--notice-event-bg": "rgba(249, 115, 22, 0.12)",
     "--notice-event-text": "#F97316",
+    "--notice-bonus-bg": "rgba(16, 185, 129, 0.12)",
+    "--notice-bonus-text": "#059669",
     "--notice-normal-bg": "rgba(148, 163, 184, 0.2)",
     "--notice-normal-text": "#64748B",
     "--shadow-card": "0 4px 12px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06)",
@@ -1106,6 +1108,39 @@ const app = {
         if (contact) contact.value = '';
         if (content) content.value = '';
         this.updateFeedbackCount();
+
+        // 重置分类选择器为默认值 (bug)
+        const options = modal.querySelectorAll('.feedback-type-option');
+        options.forEach(opt => {
+            const radio = opt.querySelector('input[type="radio"]');
+            if (opt.dataset.value === 'bug') {
+                opt.classList.add('selected');
+                if (radio) radio.checked = true;
+            } else {
+                opt.classList.remove('selected');
+                if (radio) radio.checked = false;
+            }
+        });
+
+        // 绑定分类点击事件（仅绑定一次）
+        if (!this._feedbackTypesBound) {
+            this._feedbackTypesBound = true;
+            document.querySelectorAll('.feedback-type-option').forEach(opt => {
+                opt.addEventListener('click', () => {
+                    document.querySelectorAll('.feedback-type-option').forEach(o => o.classList.remove('selected'));
+                    opt.classList.add('selected');
+                    const radio = opt.querySelector('input[type="radio"]');
+                    if (radio) radio.checked = true;
+                });
+            });
+        }
+
+        // 恢复提交按钮状态
+        const btn = document.getElementById('btn-submit-feedback');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ri-send-plane-line"></i> 提交';
+        }
     },
 
     updateFeedbackCount() {
@@ -1118,6 +1153,50 @@ const app = {
         }
         if (content && contentCount) {
             contentCount.textContent = `${content.value.length}/200`;
+        }
+    },
+
+    async submitFeedback() {
+        const contact = (document.getElementById('feedback-contact')?.value || '').trim();
+        const content = (document.getElementById('feedback-content')?.value || '').trim();
+        const checkedRadio = document.querySelector('input[name="feedback-category"]:checked');
+        const category = checkedRadio ? checkedRadio.value : 'other';
+
+        if (!content) {
+            this.showAlert('提示', '请输入反馈内容', 'warn');
+            return;
+        }
+
+        if (!window.pywebview?.api?.submit_feedback) {
+            this.showAlert('提示', '功能未就绪，请检查后端连接', 'error');
+            return;
+        }
+
+        // 禁用按钮防止重复提交
+        const btn = document.getElementById('btn-submit-feedback');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="ri-loader-4-line"></i> 提交中…';
+        }
+
+        try {
+            const res = await pywebview.api.submit_feedback(contact, content, category);
+            if (res && res.submitted) {
+                this.closeModal('modal-feedback');
+            } else {
+                this.showAlert('提示', (res && res.message) || '提交失败', 'warn');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="ri-send-plane-line"></i> 提交';
+                }
+            }
+        } catch (e) {
+            console.error('反馈提交异常:', e);
+            this.showAlert('错误', '提交异常，请稍后重试', 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="ri-send-plane-line"></i> 提交';
+            }
         }
     },
 
@@ -1649,6 +1728,8 @@ const app = {
                 return { tagClass: 'notice-tag-update', iconClass: 'ri-flashlight-line' };
             case 'event':
                 return { tagClass: 'notice-tag-event', iconClass: 'ri-sparkling-2-line' };
+            case 'bonus':
+                return { tagClass: 'notice-tag-bonus', iconClass: 'ri-gift-line' };
             default:
                 return { tagClass: 'notice-tag-normal', iconClass: 'ri-notification-3-line' };
         }
@@ -2193,7 +2274,7 @@ const app = {
         if (modsToRender.length === 0) {
             listContainer.innerHTML = `
                 <div class="empty-state" style="grid-column: 1 / span 2; animation: cardEntrance 0.5s ease both;">
-                    <div class="emoji">🔍</div>
+                    <i class="ri-search-line"></i>
                     <h3>没有找到相关语音包</h3>
                     <p>试试其他关键词，或导入新文件</p>
                 </div>`;
@@ -3368,8 +3449,8 @@ app.init = async function () {
         const disclaimerAccepted = await app.checkDisclaimer();
         if (disclaimerAccepted === false) return;
 
-        // 1.2 全局拖放初始化 (暂时禁用)
-        // TODO 需要优化，拖放压缩包时大概率卡死
+        // 1.2 全局拖放初始化（暂未启用）
+        // TODO: 当前拖放导入在部分压缩包场景下仍可能阻塞，需要完成专项优化后再恢复。
         // if (app.setupGlobalDragDrop) app.setupGlobalDragDrop();
 
 
