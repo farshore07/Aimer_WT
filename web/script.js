@@ -132,7 +132,14 @@ const app = {
     _libraryLoaded: false,
     _libraryRefreshing: false,
     _skinsLoaded: false,
+    _skinsItems: [],
+    _skinsSearchQuery: "",
+    _skinsSortKey: "update_time",
+    _skinsRenderSeq: 0,
     _sightsLoaded: false,
+    _sightsItems: [],
+    _sightsSearchQuery: "",
+    _sightsSortKey: "update_time",
     _guideReady: false,
     telemetryConnected: false,
     userSeqId: 0,
@@ -469,10 +476,12 @@ const app = {
                 if (!camoPage || !skinsView) return;
                 if (!camoPage.classList.contains('active')) return;
                 if (skinsView.classList.contains('active')) {
+                    this.updateResourceStorage('skins');
                     if (!this._skinsLoaded) this.refreshSkins();
                     return;
                 }
                 if (sightsView && sightsView.classList.contains('active')) {
+                    this.updateResourceStorage('sights');
                     if (!this._sightsLoaded) this.loadSightsView();
                 }
             }, 80);
@@ -540,49 +549,110 @@ const app = {
             return;
         }
 
-        const items = res.items || [];
-        countEl.textContent = this.t('tools.count_local', { n: items.length });
+        this._skinsItems = Array.isArray(res.items) ? res.items : [];
+
+        const searchInput = document.getElementById('skins-search-input');
+        const sortSelect = document.getElementById('skins-sort-select');
+        if (searchInput) this._skinsSearchQuery = searchInput.value || "";
+        if (sortSelect) this._skinsSortKey = sortSelect.value || "update_time";
+
+        this._renderSkinsView();
+        this.updateResourceStorage('skins');
+    },
+
+    filterSkinsNew(query) {
+        this._skinsSearchQuery = String(query || "");
+        if (this._skinsRefreshing && !this._skinsLoaded) return;
+        this._renderSkinsView();
+    },
+
+    sortSkinsNew(sortKey) {
+        this._skinsSortKey = sortKey || "update_time";
+        if (this._skinsRefreshing && !this._skinsLoaded) return;
+        this._renderSkinsView();
+    },
+
+    _getFilteredSkins() {
+        const query = String(this._skinsSearchQuery || "").trim().toLowerCase();
+        let items = Array.isArray(this._skinsItems) ? this._skinsItems.slice() : [];
+
+        if (query) {
+            items = items.filter(it => {
+                const searchText = [
+                    it.name,
+                    it.path,
+                    it.preview_path,
+                    it.file_count,
+                    it.size_bytes
+                ].filter(v => v !== null && v !== undefined).join(" ").toLowerCase();
+                return searchText.includes(query);
+            });
+        }
+
+        const sortKey = this._skinsSortKey || "update_time";
+        items.sort((a, b) => {
+            if (sortKey === "name") {
+                return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", { numeric: true });
+            }
+            if (sortKey === "size") {
+                return Number(b.size_bytes || 0) - Number(a.size_bytes || 0);
+            }
+            const bTime = Number(b.update_time || b.mtime || b.modified_time || 0);
+            const aTime = Number(a.update_time || a.mtime || a.modified_time || 0);
+            return bTime - aTime;
+        });
+
+        return items;
+    },
+
+    _renderSkinsView() {
+        const listEl = document.getElementById('skins-list');
+        const countEl = document.getElementById('skins-count');
+        if (!listEl || !countEl) return;
+
+        this._skinsRenderSeq = (this._skinsRenderSeq || 0) + 1;
+        const seq = this._skinsRenderSeq;
+        const items = this._getFilteredSkins();
+        countEl.textContent = `（已选 0 项） 共 ${items.length} 项`;
+
+        const selectAll = document.getElementById('skins-select-all');
+        if (selectAll) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        }
 
         if (items.length === 0) {
-            this._skinsLoaded = true;
-            this._skinsRefreshing = false;
-            if (refreshBtn) {
-                refreshBtn.disabled = false;
-                refreshBtn.classList.remove('is-loading');
-            }
+            const hasQuery = String(this._skinsSearchQuery || "").trim().length > 0;
             listEl.innerHTML = `
-                <div class="empty-state" style="grid-column: 1 / -1;">
+                <div class="res-empty-state">
                     <i class="ri-brush-3-line"></i>
-                    <h3>${this.t('tools.empty_skins')}</h3>
-                    <p>${this.t('tools.empty_skins_desc')}</p>
+                    <h3>${hasQuery ? "没有匹配的涂装" : this.t('tools.empty_skins')}</h3>
+                    <p>${hasQuery ? "换个关键词试试" : this.t('tools.empty_skins_desc')}</p>
                 </div>
             `;
+            this._finishSkinsRender();
             return;
         }
 
-        // --- 分片渲染逻辑 ---
         listEl.innerHTML = '';
         const CHUNK_SIZE = 24;
         let currentIndex = 0;
-        const seq = this._skinsRefreshSeq;
+        const placeholder = 'assets/card_image_small.png';
 
         const renderChunk = () => {
-            if (seq !== this._skinsRefreshSeq) return;
+            if (seq !== this._skinsRenderSeq) return;
 
             const chunk = items.slice(currentIndex, currentIndex + CHUNK_SIZE);
-            const placeholder = 'assets/card_image_small.png';
-
             const html = chunk.map(it => {
-                // 初始显示占位图或已有封面
                 const cover = it.cover_url || placeholder;
-                const isDefaultCover = !!it.cover_is_default;
+                const isDefaultCover = !!it.cover_is_default || !it.cover_url || !it.preview_path;
                 const sizeText = app._formatBytes(it.size_bytes || 0);
                 const safeName = app._escapeHtml(it.name);
 
                 return `
                     <div class="small-card animate-in" title="${app._escapeHtml(it.path || '')}" data-skin-name="${safeName}">
                         <div class="small-card-img-wrapper" style="position:relative;">
-                             <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''} skin-img-node" 
+                             <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''} skin-img-node"
                                   src="${cover}" loading="lazy" alt="">
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn"
@@ -607,25 +677,37 @@ const app = {
             if (currentIndex < items.length) {
                 requestAnimationFrame(renderChunk);
             } else {
-                this._skinsLoaded = true;
-                this._skinsRefreshing = false;
-                if (refreshBtn) {
-                    refreshBtn.disabled = false;
-                    refreshBtn.classList.remove('is-loading');
-                }
+                this._finishSkinsRender();
             }
         };
 
         renderChunk();
     },
 
+    _finishSkinsRender() {
+        const refreshBtn = document.getElementById('btn-refresh-skins');
+        this._skinsLoaded = true;
+        this._skinsRefreshing = false;
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.classList.remove('is-loading');
+        }
+    },
+
     // 接收后端异步推送的封面数据
     onSkinCoverReady(skinName, coverUrl) {
+        const item = (this._skinsItems || []).find(it => it && it.name === skinName);
+        const isDefaultCover = item ? !item.preview_path : false;
+        if (item) {
+            item.cover_url = coverUrl;
+            item.cover_is_default = isDefaultCover;
+        }
         const card = document.querySelector(`.small-card[data-skin-name="${CSS.escape(skinName)}"]`);
         if (card) {
             const img = card.querySelector('.skin-img-node');
             if (img && img.src.includes('card_image_small.png')) {
                 img.src = coverUrl;
+                img.classList.toggle('is-default-cover', isDefaultCover);
             }
         }
     },
@@ -1180,6 +1262,71 @@ const app = {
         if (mb < 1) return '<1 MB';
         if (mb < 1024) return `${mb.toFixed(0)} MB`;
         return `${(mb / 1024).toFixed(1)} GB`;
+    },
+
+    _formatStorageBytes(bytes) {
+        const b = Number(bytes || 0);
+        if (!Number.isFinite(b) || b <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const index = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
+        const value = b / Math.pow(1024, index);
+        const digits = index <= 1 ? 0 : 1;
+        return `${value.toFixed(digits)} ${units[index]}`;
+    },
+
+    _setResourceStorageState(resourceType, state, data) {
+        const prefix = String(resourceType || '');
+        const totalEl = document.getElementById(`${prefix}-storage-total`);
+        const usedEl = document.getElementById(`${prefix}-storage-used`);
+        const folderEl = document.getElementById(`${prefix}-storage-folder`);
+        const barEl = document.getElementById(`${prefix}-storage-bar`);
+        if (!totalEl || !usedEl || !folderEl || !barEl) return;
+
+        if (state === 'loading') {
+            totalEl.textContent = '读取中...';
+            usedEl.textContent = '读取中...';
+            folderEl.textContent = '读取中...';
+            barEl.style.width = '0%';
+            return;
+        }
+
+        if (state !== 'ready' || !data || !data.success) {
+            totalEl.textContent = '未获取';
+            usedEl.textContent = '未获取';
+            folderEl.textContent = data && data.reason === 'path_not_found' ? '未设置路径' : '未获取';
+            barEl.style.width = '0%';
+            return;
+        }
+
+        const totalBytes = Number(data.total_bytes || 0);
+        const usedBytes = Number(data.used_bytes || 0);
+        const folderBytes = Number(data.folder_size_bytes || 0);
+        const usedPercent = totalBytes > 0 ? Math.max(0, Math.min(100, usedBytes / totalBytes * 100)) : 0;
+        const remainingBytes = totalBytes > 0 ? Math.max(0, totalBytes - usedBytes) : 0;
+
+        totalEl.textContent = this._formatStorageBytes(totalBytes);
+        usedEl.textContent = this._formatStorageBytes(remainingBytes);
+        folderEl.textContent = this._formatStorageBytes(folderBytes);
+        barEl.style.width = `${usedPercent.toFixed(1)}%`;
+    },
+
+    async updateResourceStorage(resourceType) {
+        const type = String(resourceType || '').trim();
+        if (!type) return;
+
+        this._setResourceStorageState(type, 'loading');
+        try {
+            if (!window.pywebview?.api?.get_resource_storage_info) {
+                this._setResourceStorageState(type, 'unavailable', { reason: 'api_unavailable' });
+                return;
+            }
+
+            const result = await pywebview.api.get_resource_storage_info(type);
+            this._setResourceStorageState(type, 'ready', result);
+        } catch (error) {
+            console.warn(`[Storage] ${type} 存储信息读取失败:`, error);
+            this._setResourceStorageState(type, 'error', { reason: 'read_failed' });
+        }
     },
 
     _escapeHtml(str) {
@@ -4138,6 +4285,10 @@ app.switchResourceView = function (target) {
     });
 
     // 刷新对应内容
+    if (typeof this.updateResourceStorage === 'function') {
+        this.updateResourceStorage(target);
+    }
+
     if (target === 'skins') {
         if (!this._skinsLoaded) this.refreshSkins();
     } else if (target === 'sights') {
@@ -4150,6 +4301,88 @@ app.switchResourceView = function (target) {
         if (typeof Hangar !== 'undefined' && !Hangar._loaded) Hangar.refresh_list();
     }
 };
+
+app.initResourceSortDropdowns = function () {
+    if (!window.AppDropdownMenu) return;
+
+    const sort_configs = [
+        { type: 'skins', select_id: 'skins-sort-select', dropdown_id: 'skins-sort-dropdown' },
+        { type: 'sights', select_id: 'sights-sort-select', dropdown_id: 'sights-sort-dropdown' },
+        { type: 'tasks', select_id: 'tasks-sort-select', dropdown_id: 'tasks-sort-dropdown' },
+        { type: 'models', select_id: 'models-sort-select', dropdown_id: 'models-sort-dropdown' },
+        { type: 'hangar', select_id: 'hangar-sort-select', dropdown_id: 'hangar-sort-dropdown' }
+    ];
+
+    this.resource_sort_dropdowns = this.resource_sort_dropdowns || {};
+
+    sort_configs.forEach((config) => {
+        const select_el = document.getElementById(config.select_id);
+        const dropdown_el = document.getElementById(config.dropdown_id);
+        if (!select_el || !dropdown_el) return;
+
+        const options = Array.from(select_el.options).map((option) => ({
+            value: option.value,
+            label: option.textContent.trim()
+        }));
+
+        const dropdown = new AppDropdownMenu({
+            id: `${config.type}-resource-sort`,
+            containerId: config.dropdown_id,
+            options,
+            placeholder: '排序',
+            size: 'sm',
+            width: '108px',
+            onChange: (value) => {
+                select_el.value = value;
+                select_el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+
+        dropdown.setValue(select_el.value || options[0]?.value || '', false);
+        this.resource_sort_dropdowns[config.type] = dropdown;
+    });
+};
+
+app.switchResourceViewMode = function (resource_type, mode) {
+    const type = String(resource_type || '').trim();
+    const view_mode = mode === 'list' ? 'list' : 'card';
+    if (!type) return;
+
+    const toggle_el = document.querySelector(`.res-view-toggle[data-resource-type="${type}"]`);
+    const list_el = document.getElementById(`${type}-list`);
+
+    if (toggle_el) {
+        toggle_el.classList.toggle('is-card-mode', view_mode === 'card');
+        toggle_el.classList.toggle('is-list-mode', view_mode === 'list');
+        toggle_el.querySelectorAll('button').forEach((button, index) => {
+            const button_mode = index === 0 ? 'card' : 'list';
+            button.classList.toggle('active', button_mode === view_mode);
+            button.setAttribute('aria-pressed', button_mode === view_mode ? 'true' : 'false');
+        });
+    }
+
+    if (list_el) {
+        list_el.classList.toggle('is-card-view', view_mode === 'card');
+        list_el.classList.toggle('is-list-view', view_mode === 'list');
+    }
+};
+
+app.initResourceViewModeControls = function () {
+    ['skins', 'sights', 'tasks', 'models', 'hangar'].forEach((resource_type) => {
+        this.switchResourceViewMode(resource_type, 'card');
+    });
+};
+
+app.initResourcePageControls = function () {
+    this.initResourceSortDropdowns();
+    this.initResourceViewModeControls();
+};
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => app.initResourcePageControls(), { once: true });
+} else {
+    app.initResourcePageControls();
+}
 
 // ===========================
 // 炮镜管理功能
@@ -4167,6 +4400,7 @@ app.loadSightsView = function () {
 
     // 自动搜索 UID 列表
     this.refreshSightsUidList();
+    this.updateResourceStorage('sights');
 
     if (this.sightsPath) {
         if (primaryBtn) primaryBtn.onclick = () => app.selectSightsPath();
@@ -4355,46 +4589,13 @@ app.refreshSights = async function (opts) {
         if (!camoPage.classList.contains('active')) return;
         if (!sightsView.classList.contains('active')) return;
 
-        const items = result.items || [];
-
-        countEl.textContent = this.t('tools.count_local', { n: items.length });
-
-        if (items.length === 0) {
-            this._sightsLoaded = true;
-            listEl.innerHTML = `
-                <div class="empty-state">
-                    <i class="ri-crosshair-line"></i>
-                    <h3>${this.t('tools.empty_sights')}</h3>
-                    <p>${this.t('tools.empty_sights_desc')}</p>
-                </div>
-            `;
-            return;
-        }
-
-        const placeholder = 'assets/card_image_small.png';
-        listEl.innerHTML = items.map(item => {
-            const cover = item.cover_url || placeholder;
-            const isDefaultCover = !!item.cover_is_default;
-            return `
-                <div class="small-card">
-                    <div class="small-card-img-wrapper" style="position:relative;">
-                        <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''}" src="${cover}" alt="">
-                        <div class="skin-edit-overlay">
-                            <button class="btn-v2 icon-only small secondary skin-edit-btn"
-                                    onclick="app.openEditSightModal('${app._escapeHtml(item.name)}', '${cover.replace(/'/g, "\\'")}')">
-                                <i class="ri-edit-line"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="small-card-body">
-                        <div class="small-card-title">${app._escapeHtml(item.name)}</div>
-                        <div class="small-card-meta">
-                            <span><i class="ri-file-list-3-line"></i> ${item.file_count} 文件</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join('');
+        this._sightsItems = Array.isArray(result.items) ? result.items : [];
+        const searchInput = document.getElementById('sights-search-input');
+        const sortSelect = document.getElementById('sights-sort-select');
+        if (searchInput) this._sightsSearchQuery = searchInput.value || "";
+        if (sortSelect) this._sightsSortKey = sortSelect.value || "update_time";
+        this._renderSightsView();
+        this.updateResourceStorage('sights');
         this._sightsLoaded = true;
     } catch (e) {
         console.error(e);
@@ -4405,6 +4606,101 @@ app.refreshSights = async function (opts) {
             refreshBtn.classList.remove('is-loading');
         }
     }
+};
+
+app.filterSightsNew = function (query) {
+    this._sightsSearchQuery = String(query || "");
+    this._renderSightsView();
+};
+
+app.sortSightsNew = function (sortKey) {
+    this._sightsSortKey = sortKey || "update_time";
+    this._renderSightsView();
+};
+
+app._getFilteredSights = function () {
+    const query = String(this._sightsSearchQuery || "").trim().toLowerCase();
+    let items = Array.isArray(this._sightsItems) ? this._sightsItems.slice() : [];
+
+    if (query) {
+        items = items.filter(item => {
+            const searchText = [
+                item.name,
+                item.path,
+                item.preview_path,
+                item.file_count,
+                item.size_bytes
+            ].filter(v => v !== null && v !== undefined).join(" ").toLowerCase();
+            return searchText.includes(query);
+        });
+    }
+
+    const sortKey = this._sightsSortKey || "update_time";
+    items.sort((a, b) => {
+        if (sortKey === "name") {
+            return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", { numeric: true });
+        }
+        if (sortKey === "size") {
+            return Number(b.size_bytes || 0) - Number(a.size_bytes || 0);
+        }
+        const bTime = Number(b.update_time || b.mtime || b.modified_time || 0);
+        const aTime = Number(a.update_time || a.mtime || a.modified_time || 0);
+        return bTime - aTime;
+    });
+
+    return items;
+};
+
+app._renderSightsView = function () {
+    const listEl = document.getElementById('sights-list');
+    const countEl = document.getElementById('sights-count');
+    if (!listEl || !countEl) return;
+
+    const items = this._getFilteredSights();
+    countEl.textContent = `（已选 0 项） 共 ${items.length} 项`;
+
+    const selectAll = document.getElementById('sights-select-all');
+    if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+    }
+
+    if (items.length === 0) {
+        const hasQuery = String(this._sightsSearchQuery || "").trim().length > 0;
+        listEl.innerHTML = `
+            <div class="res-empty-state">
+                <i class="ri-crosshair-line"></i>
+                <h3>${hasQuery ? "没有匹配的炮镜" : this.t('tools.empty_sights')}</h3>
+                <p>${hasQuery ? "换个关键词试试" : this.t('tools.empty_sights_desc')}</p>
+            </div>
+        `;
+        return;
+    }
+
+    const placeholder = 'assets/card_image_small.png';
+    listEl.innerHTML = items.map(item => {
+        const cover = item.cover_url || placeholder;
+        const isDefaultCover = !!item.cover_is_default;
+        return `
+            <div class="small-card">
+                <div class="small-card-img-wrapper" style="position:relative;">
+                    <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''}" src="${cover}" alt="">
+                    <div class="skin-edit-overlay">
+                        <button class="btn-v2 icon-only small secondary skin-edit-btn"
+                                onclick="app.openEditSightModal('${app._escapeHtml(item.name)}', '${cover.replace(/'/g, "\\'")}')">
+                            <i class="ri-edit-line"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="small-card-body">
+                    <div class="small-card-title">${app._escapeHtml(item.name)}</div>
+                    <div class="small-card-meta">
+                        <span><i class="ri-file-list-3-line"></i> ${item.file_count} 文件</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
 };
 
 // --- 语音包库路径管理 ---

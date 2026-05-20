@@ -4056,6 +4056,109 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": f"还原失败: {e}"}
 
+    def _get_resource_storage_path(self, resource_type):
+        resource_type = str(resource_type or "").strip().lower()
+
+        if resource_type == "skins":
+            game_path = self._cfg_mgr.get_game_path()
+            valid, _ = self._logic.validate_game_path(game_path)
+            if not valid:
+                return None
+            return self._skins_mgr.get_userskins_dir(game_path)
+
+        if resource_type == "sights":
+            return self._sights_mgr.get_usersights_path()
+
+        if resource_type == "tasks":
+            return Path(self._task_mgr.get_task_library_path())
+
+        if resource_type == "models":
+            return Path(self._model_mgr.get_model_library_path())
+
+        if resource_type == "hangar":
+            return Path(self._hangar_mgr.get_hangar_library_path())
+
+        return None
+
+    def _get_existing_storage_anchor(self, target_path):
+        path = Path(target_path)
+        if path.exists():
+            return path
+
+        for parent in path.parents:
+            if parent.exists():
+                return parent
+
+        return None
+
+    def _get_folder_size_bytes(self, folder_path):
+        root = Path(folder_path)
+        if not root.exists() or not root.is_dir():
+            return 0
+
+        total = 0
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                total += entry.stat(follow_symlinks=False).st_size
+                        except (FileNotFoundError, PermissionError, OSError):
+                            continue
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+
+        return total
+
+    def get_resource_storage_info(self, resource_type):
+        # 返回资源库所在盘符与当前库目录用量；任何路径或权限异常都降级为安全结果。
+        try:
+            target_path = self._get_resource_storage_path(resource_type)
+            if not target_path:
+                return {
+                    "success": False,
+                    "resource_type": str(resource_type or ""),
+                    "reason": "path_not_found",
+                }
+
+            target_path = Path(target_path)
+            anchor = self._get_existing_storage_anchor(target_path)
+            if not anchor:
+                return {
+                    "success": False,
+                    "resource_type": str(resource_type or ""),
+                    "path": str(target_path),
+                    "path_exists": False,
+                    "reason": "path_not_found",
+                }
+
+            usage = shutil.disk_usage(str(anchor))
+            folder_size = self._get_folder_size_bytes(target_path)
+            used_bytes = max(0, usage.total - usage.free)
+
+            return {
+                "success": True,
+                "resource_type": str(resource_type or ""),
+                "path": str(target_path),
+                "path_exists": target_path.exists(),
+                "total_bytes": usage.total,
+                "used_bytes": used_bytes,
+                "free_bytes": usage.free,
+                "folder_size_bytes": folder_size,
+            }
+        except Exception as e:
+            log.error(f"获取资源库存储信息失败: {e}")
+            return {
+                "success": False,
+                "resource_type": str(resource_type or ""),
+                "reason": str(e),
+            }
+
     def refresh_skins_async(self, opts=None):
         """
         先传回基本信息，再异步推送封面数据。

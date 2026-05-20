@@ -21,6 +21,10 @@ const TaskLibrary = {
     icon: 'ri-task-line',
     view_id: 'view-tasks',
     _loaded: false,
+    _items: [],
+    _search_query: '',
+    _sort_key: 'update_time',
+    _render_seq: 0,
     _current_edit_name: null,
 
     init() {
@@ -32,6 +36,7 @@ const TaskLibrary = {
     show() {
         const view = document.getElementById(this.view_id);
         if (view) view.classList.add('active');
+        if (window.app && typeof app.updateResourceStorage === 'function') app.updateResourceStorage('tasks');
         if (!this._loaded) this.refresh_list();
     },
 
@@ -66,15 +71,13 @@ const TaskLibrary = {
                 return;
             }
 
-            const items = res.items || [];
-            count_el.textContent = `本地: ${items.length}`;
-
-            if (items.length === 0) {
-                this._render_empty_state(list_el, count_el);
-                return;
-            }
-
-            this._render_card_list(list_el, items);
+            this._items = Array.isArray(res.items) ? res.items : [];
+            const search_input = document.getElementById('tasks-search-input');
+            const sort_select = document.getElementById('tasks-sort-select');
+            if (search_input) this._search_query = search_input.value || '';
+            if (sort_select) this._sort_key = sort_select.value || 'update_time';
+            this._render_filtered_list();
+            if (window.app && typeof app.updateResourceStorage === 'function') app.updateResourceStorage('tasks');
             this._loaded = true;
         } catch (error) {
             console.error('[TaskLibrary] 刷新列表失败:', error);
@@ -93,9 +96,12 @@ const TaskLibrary = {
         const placeholder = 'assets/card_image_small.png';
         const CHUNK_SIZE = 24;
         let current_index = 0;
+        this._render_seq = (this._render_seq || 0) + 1;
+        const render_seq = this._render_seq;
         container.innerHTML = '';
 
         const render_chunk = () => {
+            if (render_seq !== this._render_seq) return;
             const chunk = items.slice(current_index, current_index + CHUNK_SIZE);
             const html = chunk.map(it => {
                 const cover = it.cover_url || placeholder;
@@ -135,6 +141,81 @@ const TaskLibrary = {
         render_chunk();
     },
 
+    filter_list(query) {
+        this._search_query = String(query || '');
+        this._render_filtered_list();
+    },
+
+    sort_list(sort_key) {
+        this._sort_key = sort_key || 'update_time';
+        this._render_filtered_list();
+    },
+
+    _get_visible_items() {
+        const query = String(this._search_query || '').trim().toLowerCase();
+        let items = Array.isArray(this._items) ? this._items.slice() : [];
+
+        if (query) {
+            items = items.filter(it => {
+                const search_text = [
+                    it.name,
+                    it.path,
+                    it.preview_path,
+                    it.file_count,
+                    it.size_bytes
+                ].filter(v => v !== null && v !== undefined).join(' ').toLowerCase();
+                return search_text.includes(query);
+            });
+        }
+
+        const sort_key = this._sort_key || 'update_time';
+        items.sort((a, b) => {
+            if (sort_key === 'name') {
+                return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN', { numeric: true });
+            }
+            if (sort_key === 'size') {
+                return Number(b.size_bytes || 0) - Number(a.size_bytes || 0);
+            }
+            const b_time = Number(b.update_time || b.mtime || b.modified_time || 0);
+            const a_time = Number(a.update_time || a.mtime || a.modified_time || 0);
+            return b_time - a_time;
+        });
+
+        return items;
+    },
+
+    _render_filtered_list() {
+        const list_el = document.getElementById('tasks-list');
+        const count_el = document.getElementById('tasks-count');
+        if (!list_el || !count_el) return;
+
+        const items = this._get_visible_items();
+        count_el.textContent = `（已选 0 项） 共 ${items.length} 项`;
+
+        const select_all = document.getElementById('tasks-select-all');
+        if (select_all) {
+            select_all.checked = false;
+            select_all.indeterminate = false;
+        }
+
+        if (items.length === 0) {
+            if (String(this._search_query || '').trim()) {
+                list_el.innerHTML = `
+                    <div class="res-empty-state">
+                        <i class="${this.icon}"></i>
+                        <h3>没有匹配的任务</h3>
+                        <p>换个关键词试试</p>
+                    </div>
+                `;
+                return;
+            }
+            this._render_empty_state(list_el, count_el);
+            return;
+        }
+
+        this._render_card_list(list_el, items);
+    },
+
     _bind_card_events() {
         const container = document.getElementById('tasks-list');
         if (!container || container.dataset.editBound === '1') return;
@@ -153,14 +234,14 @@ const TaskLibrary = {
     _render_empty_state(container, count_el) {
         if (container) {
             container.innerHTML = `
-                <div class="empty-state" style="grid-column: 1 / -1;">
+                <div class="res-empty-state">
                     <i class="ri-task-line"></i>
                     <h3>还没有任务</h3>
-                    <p>点击左侧"打开任务库"按钮，将任务文件夹放入后刷新</p>
+                    <p>点击右侧"打开任务库"按钮，将任务文件夹放入后刷新</p>
                 </div>
             `;
         }
-        if (count_el) count_el.textContent = '本地: 0';
+        if (count_el) count_el.textContent = '（已选 0 项） 共 0 项';
     },
 
     // ==================== 编辑弹窗 ====================

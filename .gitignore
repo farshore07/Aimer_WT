@@ -106,6 +106,7 @@ AimerWT_Telemetry/telemetry
 服务器面板/
 
 # AI 生成的变更说明文档（不上传）
+OTHER/
 two_phase_changelog.md
 web/ads/README_ads_structure.md
 web/ai/目录结构说明.md

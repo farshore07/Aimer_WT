@@ -339,7 +339,7 @@
 
 #view-skins #skins-list,
 #view-sights #sights-list {
-    padding: 0 20px 20px;
+    padding: 12px 20px 20px;
     flex: 1;
     overflow-y: auto;
     min-height: 0;
