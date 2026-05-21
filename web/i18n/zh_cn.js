@@ -162,7 +162,7 @@ window.I18N && I18N.register("zh_cn", {
     "settings.personalization": "个性化",
     "settings.appearance_subtitle": "Appearance & Themes",
     "settings.theme_label": "选择界面风格",
-    "settings.language_label": "界面语言",
+    "settings.language_label": "界面语言（Language）",
     "settings.telemetry_title": "加入用户体验改善计划",
     "settings.telemetry_desc": "允许发送匿名使用数据以改进软件",
     "settings.startup": "启动设置",

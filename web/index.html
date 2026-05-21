@@ -1132,7 +1132,7 @@
 
                         <div style="height: 1px; background: var(--border-color); margin: 20px 0; opacity: 0.5;"></div>
                         <label style="font-size: 12px; color: var(--text-sec); display: block; margin-bottom: 8px;">
-                            <span data-i18n="settings.language_label">界面语言</span>
+                            <span data-i18n="settings.language_label">界面语言（Language）</span>
                         </label>
                         <div class="custom-select-wrapper" id="language-select-wrapper">
                             <div class="custom-select-trigger" onclick="app.toggleLanguageDropdown()">
@@ -1141,6 +1141,7 @@
                             </div>
                             <div class="custom-select-dropdown" id="language-select-dropdown">
                                 <div class="custom-select-option selected" data-value="zh_cn" onclick="app.selectLanguage('zh_cn')">简体中文</div>
+                                <div class="custom-select-option" data-value="zh_tw" onclick="app.selectLanguage('zh_tw')">繁體中文</div>
                                 <div class="custom-select-option" data-value="en_us" onclick="app.selectLanguage('en_us')">English</div>
                             </div>
                         </div>
@@ -1597,68 +1598,110 @@
     </div>
 
     <!-- 涂装编辑模态框 -->
-    <div class="modal-overlay" id="modal-edit-skin">
-        <div class="modal-content" style="max-width: 420px;">
-            <h2>编辑涂装</h2>
-            <p class="subtitle">修改显示名称与封面</p>
+    <div class="modal-overlay resource-edit-modal" id="modal-edit-skin">
+        <div class="modal-content skin-edit-dialog">
+            <div class="skin-edit-layout">
+                <div class="skin-edit-preview-panel">
+                    <div class="skin-cover-edit skin-edit-cover" onclick="app.requestUpdateSkinCover()">
+                        <img id="edit-skin-cover" src="" alt="封面预览">
+                        <div class="cover-overlay skin-edit-cover-action">
+                            <span><i class="ri-upload-2-line"></i> 上传新封面</span>
+                        </div>
+                    </div>
+                    <p class="skin-edit-cover-tip">建议不低于 640×360，最佳 1280×720；推荐 16:9 图片，支持 JPG/PNG/WebP。</p>
 
-            <div class="edit-skin-form">
-                <div class="skin-cover-edit" onclick="app.requestUpdateSkinCover()">
-                    <img id="edit-skin-cover" src="" alt="封面预览">
-                    <div class="cover-overlay">
-                        <i class="ri-camera-line"></i>
-                        <span>更换封面</span>
+                    <div class="skin-rename-rule">
+                        <strong><i class="ri-information-line"></i> 文件夹命名规则</strong>
+                        <span>请勿包含特殊字符 \ / : * ? " &lt; &gt; |</span>
+                        <span>修改原始文件夹名会同步修改本地文件夹名。</span>
                     </div>
                 </div>
 
-                <div class="form-group" style="margin-top: 15px;">
-                    <label>文件夹名称 (即显示名称)</label>
-                    <input type="text" id="edit-skin-name" placeholder="请输入新的名称">
-                    <p class="input-hint">
-                        <i class="ri-information-line"></i> 请勿包含特殊字符 \ / : * ? " &lt; &gt; | <br>
-                        修改名称会同步修改本地文件夹名。
-                    </p>
-                </div>
-            </div>
+                <div class="skin-edit-info-panel">
+                    <h2>编辑封面和信息</h2>
+                    <p class="subtitle">修改显示名称与封面，让您的涂装更容易被识别。</p>
 
-            <div class="modal-actions">
-                <button class="btn secondary" onclick="app.closeModal('modal-edit-skin')">取消</button>
-                <button class="btn primary" onclick="app.saveSkinEdit()">
-                    <i class="ri-save-line"></i> 保存修改
-                </button>
+                    <div class="skin-edit-tags" aria-label="涂装分类">
+                        <span class="tag-local"><i class="ri-archive-line"></i> 本地资源</span>
+                        <span class="tag-import"><i class="ri-upload-cloud-2-line"></i> 用户导入</span>
+                    </div>
+
+                    <div class="edit-skin-form">
+                        <div class="form-group skin-edit-field">
+                            <label>显示名称</label>
+                            <div class="skin-edit-input-wrap">
+                                <input type="text" id="edit-skin-display-name" maxlength="32" placeholder="请输入显示名称">
+                                <span id="edit-skin-display-count">0/32</span>
+                            </div>
+                        </div>
+
+                        <div class="form-group skin-edit-field">
+                            <label>原始文件夹名</label>
+                            <input type="text" id="edit-skin-name" placeholder="请输入文件夹名称">
+                        </div>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button class="btn secondary" onclick="app.closeModal('modal-edit-skin')">取消</button>
+                        <button class="btn primary" onclick="app.saveSkinEdit()">
+                            <i class="ri-save-line"></i> 保存修改
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="modal-overlay" id="modal-edit-sight">
-        <div class="modal-content" style="max-width: 420px;">
-            <h2>编辑炮镜</h2>
-            <p class="subtitle">修改显示名称与封面</p>
+    <div class="modal-overlay resource-edit-modal" id="modal-edit-sight">
+        <div class="modal-content skin-edit-dialog">
+            <div class="skin-edit-layout">
+                <div class="skin-edit-preview-panel">
+                    <div class="skin-cover-edit skin-edit-cover" onclick="app.requestUpdateSightCover()">
+                        <img id="edit-sight-cover" src="" alt="封面预览">
+                        <div class="cover-overlay skin-edit-cover-action">
+                            <span><i class="ri-upload-2-line"></i> 上传新封面</span>
+                        </div>
+                    </div>
+                    <p class="skin-edit-cover-tip">建议不低于 640×360，最佳 1280×720；推荐 16:9 图片，支持 JPG/PNG/WebP。</p>
 
-            <div class="edit-skin-form">
-                <div class="skin-cover-edit" onclick="app.requestUpdateSightCover()">
-                    <img id="edit-sight-cover" src="" alt="封面预览">
-                    <div class="cover-overlay">
-                        <i class="ri-camera-line"></i>
-                        <span>更换封面</span>
+                    <div class="skin-rename-rule">
+                        <strong><i class="ri-information-line"></i> 文件夹命名规则</strong>
+                        <span>请勿包含特殊字符 \ / : * ? " &lt; &gt; |</span>
+                        <span>修改原始文件夹名会同步修改本地文件夹名。</span>
                     </div>
                 </div>
 
-                <div class="form-group" style="margin-top: 15px;">
-                    <label>文件夹名称 (即显示名称)</label>
-                    <input type="text" id="edit-sight-name" placeholder="请输入新的名称">
-                    <p class="input-hint">
-                        <i class="ri-information-line"></i> 请勿包含特殊字符 \ / : * ? " &lt; &gt; | <br>
-                        修改名称会同步修改本地文件夹名。
-                    </p>
-                </div>
-            </div>
+                <div class="skin-edit-info-panel">
+                    <h2>编辑炮镜</h2>
+                    <p class="subtitle">修改显示名称与封面，让您的炮镜更容易被识别。</p>
 
-            <div class="modal-actions">
-                <button class="btn secondary" onclick="app.closeModal('modal-edit-sight')">取消</button>
-                <button class="btn primary" onclick="app.saveSightEdit()">
-                    <i class="ri-save-line"></i> 保存修改
-                </button>
+                    <div class="skin-edit-tags" aria-label="炮镜分类">
+                        <span class="tag-local"><i class="ri-archive-line"></i> 本地资源</span>
+                        <span class="tag-import"><i class="ri-upload-cloud-2-line"></i> 用户导入</span>
+                    </div>
+
+                    <div class="edit-skin-form">
+                        <div class="form-group skin-edit-field">
+                            <label>显示名称</label>
+                            <div class="skin-edit-input-wrap">
+                                <input type="text" id="edit-sight-display-name" maxlength="32" placeholder="请输入显示名称">
+                                <span id="edit-sight-display-count">0/32</span>
+                            </div>
+                        </div>
+
+                        <div class="form-group skin-edit-field">
+                            <label>原始文件夹名</label>
+                            <input type="text" id="edit-sight-name" placeholder="请输入文件夹名称">
+                        </div>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button class="btn secondary" onclick="app.closeModal('modal-edit-sight')">取消</button>
+                        <button class="btn primary" onclick="app.saveSightEdit()">
+                            <i class="ri-save-line"></i> 保存修改
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -2001,6 +2044,7 @@
     <script src="logger.js"></script>
     <script src="i18n/i18n.js"></script>
     <script src="i18n/zh_cn.js"></script>
+    <script src="i18n/zh_tw.js"></script>
     <script src="i18n/en_us.js"></script>
     <script src="loading_voice_package.js"></script>
     <script src="components/AppDropdownMenu.js"></script>

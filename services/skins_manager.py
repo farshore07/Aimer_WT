@@ -25,6 +25,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Any
 
+from services.resource_index_cache import ResourceIndexCache
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -53,11 +54,18 @@ class SkinsManager:
         _cache: 扫描结果缓存
     """
     
-    def __init__(self):
+    def __init__(self, cache_dir: str | Path | None = None):
         """
         初始化 SkinsManager。
         """
         self._cache: dict | None = None
+        self._cache_signature = None
+        self._index_cache = ResourceIndexCache("skins_library", cache_dir=cache_dir)
+
+    def _clear_cache(self) -> None:
+        self._cache = None
+        self._cache_signature = None
+        self._index_cache.clear()
 
     def get_userskins_dir(self, game_path: str | Path) -> Path:
         """
@@ -85,7 +93,7 @@ class SkinsManager:
         userskins_dir = self.get_userskins_dir(game_path)
         
         if not userskins_dir.exists():
-            self._cache = None
+            self._clear_cache()
             return {"exists": False, "path": str(userskins_dir), "items": [], "valid": True}
 
         try:
@@ -93,38 +101,58 @@ class SkinsManager:
         except Exception:
             current_mtime = 0
 
-        if not force_refresh and self._cache is not None:
-            if (self._cache.get("path") == str(userskins_dir) and 
-                self._cache.get("mtime") == current_mtime):
+        root_signature = self._index_cache.build_root_signature(userskins_dir)
+
+        if not skip_covers and not force_refresh and self._cache is not None:
+            if (self._cache.get("path") == str(userskins_dir) and
+                self._cache_signature == root_signature):
                 # 如果缓存中有完整数据，直接返回即可
                 return self._cache
 
         items = []
+        cached_records = {} if skip_covers else self._index_cache.load_records(userskins_dir)
+        next_records: dict[str, dict] = {}
         try:
             entries = sorted([e for e in userskins_dir.iterdir() if e.is_dir()], key=lambda p: p.name.lower())
             
             for entry in entries:
-                size_bytes, file_count = self._get_dir_size_and_count_fast(entry)
                 preview_path = self._find_preview_image(entry)
-                cover_url = ""
-                cover_is_default = False
-                
-                if not skip_covers:
-                    if preview_path:
-                        cover_url = self._to_data_url(preview_path)
-                    elif default_cover_path and default_cover_path.exists():
-                        cover_url = self._to_data_url(default_cover_path)
-                        cover_is_default = True
+                cover_path = preview_path
+                if not cover_path and default_cover_path and default_cover_path.exists():
+                    cover_path = default_cover_path
 
-                items.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "size_bytes": size_bytes,
-                    "file_count": file_count,
-                    "preview_path": str(preview_path) if preview_path else "",
-                    "cover_url": cover_url,
-                    "cover_is_default": cover_is_default,
-                })
+                signature = self._index_cache.build_item_signature(entry, cover_path)
+                item = None if skip_covers else self._index_cache.get_cached_item(cached_records, entry.name, signature)
+
+                if item is None:
+                    size_bytes, file_count = self._get_dir_size_and_count_fast(entry)
+                    cover_url = ""
+                    cover_is_default = False
+
+                    if not skip_covers:
+                        if preview_path:
+                            cover_url = self._to_data_url(preview_path)
+                        elif default_cover_path and default_cover_path.exists():
+                            cover_url = self._to_data_url(default_cover_path)
+                            cover_is_default = True
+
+                    item = {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "size_bytes": size_bytes,
+                        "file_count": file_count,
+                        "preview_path": str(preview_path) if preview_path else "",
+                        "cover_url": cover_url,
+                        "cover_is_default": cover_is_default,
+                    }
+                else:
+                    item["name"] = entry.name
+                    item["path"] = str(entry)
+                    item["preview_path"] = str(preview_path) if preview_path else ""
+
+                items.append(item)
+                if not skip_covers:
+                    next_records[entry.name] = self._index_cache.make_record(signature, item)
         except Exception as e:
             log.error(f"扫描涂装失败: {e}")
 
@@ -137,6 +165,8 @@ class SkinsManager:
         }
         if not skip_covers:
             self._cache = result
+            self._cache_signature = root_signature
+            self._index_cache.save_records(userskins_dir, next_records)
         return result
 
     def _get_dir_size_and_count_fast(self, dir_path: Path) -> tuple[int, int]:
@@ -296,7 +326,7 @@ class SkinsManager:
         if progress_callback:
             progress_callback(100, "导入完成")
 
-        self._cache = None
+        self._clear_cache()
         log.info(f"涂装导入成功: {target_dir}")
         return {"ok": True, "target_dir": str(target_dir)}
 
@@ -336,7 +366,7 @@ class SkinsManager:
 
         try:
             old_dir.rename(new_dir)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已重命名涂装: {old_name} -> {new_name}")
             return True
         except PermissionError as e:
@@ -374,7 +404,7 @@ class SkinsManager:
         
         try:
             shutil.copy2(img_path, dst)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已更新涂装封面: {skin_name}")
             return True
         except PermissionError as e:
@@ -419,7 +449,7 @@ class SkinsManager:
         try:
             with open(dst, "wb") as f:
                 f.write(raw)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已更新涂装封面: {skin_name}")
             return True
         except PermissionError as e:

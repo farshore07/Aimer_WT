@@ -854,13 +854,14 @@
 .skin-cover-edit {
     width: 100%;
     height: 180px;
-    border-radius: 12px;
+    border-radius: 16px;
     overflow: hidden;
     position: relative;
     cursor: pointer;
-    background: #f0f0f0;
-    border: 2px solid transparent;
-    transition: all 0.3s ease;
+    background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.03);
 }
 
 .skin-cover-edit:hover .cover-overlay {
@@ -869,6 +870,8 @@
 
 .skin-cover-edit:hover {
     border-color: var(--primary);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(255, 153, 0, 0.15);
 }
 
 #edit-skin-cover,
@@ -879,6 +882,11 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.skin-cover-edit:hover img {
+    transform: scale(1.03);
 }
 
 .cover-overlay {
@@ -887,24 +895,437 @@
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     color: white;
     opacity: 0;
-    transition: opacity 0.2s ease;
-    gap: 8px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    gap: 10px;
 }
 
 .cover-overlay i {
-    font-size: 32px;
+    font-size: 26px;
+    transform: translateY(5px);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.skin-cover-edit:hover .cover-overlay i {
+    transform: translateY(0);
 }
 
 .cover-overlay span {
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+#modal-edit-skin .modal-content.skin-edit-dialog {
+    width: min(640px, calc(100vw - 48px));
+    min-width: 0;
+    max-width: none;
+    max-height: 90vh;
+    overflow: auto;
+    padding: 28px;
+    border-radius: 24px;
+    background: var(--bg-card);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 24px 64px -12px rgba(15, 23, 42, 0.12), 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+#modal-edit-skin .skin-edit-layout {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.15fr);
+    gap: 26px;
+    align-items: flex-start;
+}
+
+#modal-edit-skin .skin-edit-preview-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 12px;
+}
+
+#modal-edit-skin .skin-edit-cover {
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(245, 247, 250, 0.98), rgba(235, 238, 243, 0.98));
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+#modal-edit-skin .skin-edit-cover:hover {
+    border-color: rgba(255, 153, 0, 0.55);
+}
+
+#modal-edit-skin #edit-skin-cover {
+    object-fit: contain;
+}
+
+#modal-edit-skin .skin-edit-cover-action {
+    inset: auto 0 16px 0;
+    width: auto;
+    height: auto;
+    background: transparent;
+    pointer-events: none;
+}
+
+#modal-edit-skin .skin-edit-cover-action span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+#modal-edit-skin .skin-edit-cover-action i {
+    font-size: 15px;
+    color: var(--primary);
+}
+
+#modal-edit-skin .skin-edit-cover-tip {
+    margin: 12px 0 0;
+    color: var(--text-sec);
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: center;
+    opacity: 0.8;
+}
+
+#modal-edit-skin .skin-edit-info-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 16px;
+}
+
+#modal-edit-skin h2 {
+    margin: 0 0 6px;
+    color: var(--text-main);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    line-height: 1.25;
+    text-align: left;
+}
+
+#modal-edit-skin .subtitle {
+    margin: 0;
+    color: var(--text-sec);
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.5;
+    opacity: 0.9;
+}
+
+#modal-edit-skin .skin-edit-tags {
+    display: flex;
+    gap: 8px;
+    margin: 12px 0 16px;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+#modal-edit-skin .skin-edit-tags span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: default;
+    user-select: none;
+}
+
+#modal-edit-skin .skin-edit-tags span.tag-local {
+    background: rgba(245, 158, 11, 0.08);
+    color: #D97706;
+    border: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+#modal-edit-skin .skin-edit-tags span.tag-import {
+    background: rgba(59, 130, 246, 0.08);
+    color: #2563EB;
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+#modal-edit-skin .skin-edit-tags span i {
+    font-size: 12px;
+}
+
+#modal-edit-skin .edit-skin-form {
+    padding: 0;
+}
+
+#modal-edit-skin .skin-edit-field {
+    margin: 0 0 14px;
+}
+
+#modal-edit-skin .skin-edit-field label {
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+#modal-edit-skin .skin-edit-input-wrap {
+    position: relative;
+}
+
+#modal-edit-skin .form-group input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    outline: none;
+    background: rgba(15, 23, 42, 0.02);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    color: var(--text-main);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
+}
+
+#modal-edit-skin .form-group input:hover {
+    border-color: rgba(255, 153, 0, 0.4);
+    background: rgba(15, 23, 42, 0.01);
+}
+
+#modal-edit-skin .form-group input:focus {
+    border-color: var(--primary);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 4px rgba(255, 153, 0, 0.12);
+}
+
+#modal-edit-skin .skin-edit-input-wrap input {
+    padding-right: 56px;
+}
+
+#modal-edit-skin .skin-edit-input-wrap span {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-sec);
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+#modal-edit-skin .skin-rename-rule {
+    display: grid;
+    gap: 4px;
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(255, 153, 0, 0.03);
+    border-left: 3px solid var(--primary);
+    color: var(--text-sec);
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: left;
+    justify-items: start;
+    transition: all 0.3s ease;
+}
+
+#modal-edit-skin .skin-rename-rule strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 2px;
+}
+
+#modal-edit-skin .skin-rename-rule strong i {
+    color: var(--primary);
+    font-size: 13px;
+}
+
+#modal-edit-skin .skin-rename-rule span {
+    display: block;
+    text-align: left;
+    opacity: 0.9;
+    padding-left: 14px;
+    position: relative;
+}
+
+#modal-edit-skin .skin-rename-rule span::before {
+    content: "•";
+    position: absolute;
+    left: 4px;
+    color: var(--primary);
+    font-weight: 800;
+}
+
+#modal-edit-skin .modal-actions {
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+#modal-edit-skin .modal-actions .btn {
+    min-width: 84px;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+}
+
+#modal-edit-skin .modal-actions .btn.secondary {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-sec);
+}
+
+#modal-edit-skin .modal-actions .btn.secondary:hover {
+    background: rgba(15, 23, 42, 0.04);
+    color: var(--text-main);
+    border-color: rgba(15, 23, 42, 0.15);
+}
+
+#modal-edit-skin .modal-actions .btn.primary {
+    min-width: 116px;
+    background: linear-gradient(135deg, #ff9e00 0%, #ff5500 100%);
+    border: none;
+    color: white;
+    box-shadow: 0 4px 12px rgba(255, 85, 0, 0.25);
+}
+
+#modal-edit-skin .modal-actions .btn.primary:hover {
+    transform: translateY(-1.5px);
+    box-shadow: 0 6px 18px rgba(255, 85, 0, 0.4);
+    filter: brightness(1.03);
+}
+
+#modal-edit-skin .modal-actions .btn.primary:active {
+    transform: translateY(0.5px);
+    box-shadow: 0 2px 6px rgba(255, 85, 0, 0.2);
+    filter: brightness(0.97);
+}
+
+[data-theme='dark'] #modal-edit-skin .modal-content.skin-edit-dialog {
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.65), 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-edit-cover {
+    border-color: rgba(255, 255, 255, 0.08);
+    background: linear-gradient(135deg, rgba(36, 39, 45, 0.98), rgba(24, 27, 33, 0.98));
+}
+
+[data-theme='dark'] .skin-cover-edit {
+    background: linear-gradient(135deg, #27272a 0%, #18181b 100%);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] .skin-cover-edit:hover {
+    box-shadow: 0 8px 24px rgba(251, 191, 36, 0.15);
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-edit-cover-action span {
+    background: rgba(31, 35, 43, 0.92);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: var(--text-main);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-edit-tags {
+    background: transparent;
+    border: none;
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-edit-tags span.tag-local {
+    background: rgba(245, 158, 11, 0.12);
+    color: #FBBF24;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-edit-tags span.tag-import {
+    background: rgba(59, 130, 246, 0.12);
+    color: #60A5FA;
+    border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+[data-theme='dark'] #modal-edit-skin .form-group input {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] #modal-edit-skin .form-group input:hover {
+    border-color: rgba(251, 191, 36, 0.4);
+}
+
+[data-theme='dark'] #modal-edit-skin .form-group input:focus {
+    background: rgba(0, 0, 0, 0.2);
+    border-color: #FBBF24;
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.15);
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-rename-rule {
+    background: rgba(251, 191, 36, 0.05);
+    border-left-color: #FBBF24;
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-rename-rule strong i {
+    color: #FBBF24;
+}
+
+[data-theme='dark'] #modal-edit-skin .skin-rename-rule span::before {
+    color: #FBBF24;
+}
+
+[data-theme='dark'] #modal-edit-skin .modal-actions .btn.secondary:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme='dark'] #modal-edit-skin .modal-actions .btn.primary {
+    background: linear-gradient(135deg, #FBBF24 0%, #F59E0B 100%);
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+}
+
+[data-theme='dark'] #modal-edit-skin .modal-actions .btn.primary:hover {
+    box-shadow: 0 6px 18px rgba(245, 158, 11, 0.4);
+}
+
+
+@media (max-width: 860px) {
+    #modal-edit-skin .modal-content.skin-edit-dialog {
+        width: calc(100vw - 32px);
+        padding: 20px;
+    }
+
+    #modal-edit-skin .skin-edit-layout {
+        grid-template-columns: 1fr;
+        gap: 24px;
+    }
 }
 
 .form-group label {
@@ -1859,4 +2280,495 @@ a.contributor-card {
 
 [data-theme='dark'] .redeem-modal-close:hover {
     background: #27272a;
+}
+
+/* 涂装编辑弹窗专属高级缓入缓出与毛玻璃缩放动画 */
+#modal-edit-skin {
+    background:
+        radial-gradient(circle at top, rgba(255, 255, 255, 0.03), transparent 38%),
+        rgba(0, 0, 0, 0.52);
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 进场动画：遮罩层渐入 + 模糊渐现 */
+#modal-edit-skin.show {
+    animation: skinModalOverlayFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 进场动画：弹窗面板缩放 + 向上缓入 */
+#modal-edit-skin.show .skin-edit-dialog {
+    animation: skinModalContentScaleUp 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 退场动画：遮罩层渐隐 + 模糊退去 */
+#modal-edit-skin.hiding {
+    animation: skinModalOverlayFadeOut 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 退场动画：弹窗面板缩放 + 向下渐隐 */
+#modal-edit-skin.hiding .skin-edit-dialog {
+    animation: skinModalContentScaleDown 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes skinModalOverlayFadeIn {
+    from {
+        opacity: 0;
+        backdrop-filter: blur(0px);
+        -webkit-backdrop-filter: blur(0px);
+    }
+    to {
+        opacity: 1;
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
+    }
+}
+
+@keyframes skinModalOverlayFadeOut {
+    from {
+        opacity: 1;
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
+    }
+    to {
+        opacity: 0;
+        backdrop-filter: blur(0px);
+        -webkit-backdrop-filter: blur(0px);
+    }
+}
+
+@keyframes skinModalContentScaleUp {
+    from {
+        opacity: 0;
+        transform: scale(0.94) translateY(24px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes skinModalContentScaleDown {
+    from {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+    to {
+        opacity: 0;
+        transform: scale(0.97) translateY(8px);
+    }
+}
+
+/* 副功能资源编辑弹窗共用样式 */
+.resource-edit-modal {
+    background:
+        radial-gradient(circle at top, rgba(255, 255, 255, 0.03), transparent 38%),
+        rgba(0, 0, 0, 0.52);
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.resource-edit-modal.show {
+    animation: skinModalOverlayFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.resource-edit-modal.hiding {
+    animation: skinModalOverlayFadeOut 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.resource-edit-modal.show .skin-edit-dialog {
+    animation: skinModalContentScaleUp 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.resource-edit-modal.hiding .skin-edit-dialog {
+    animation: skinModalContentScaleDown 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.resource-edit-modal .modal-content.skin-edit-dialog {
+    width: min(640px, calc(100vw - 48px));
+    min-width: 0;
+    max-width: none;
+    max-height: 90vh;
+    overflow: auto;
+    padding: 28px;
+    border-radius: 24px;
+    background: var(--bg-card);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 24px 64px -12px rgba(15, 23, 42, 0.12), 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.resource-edit-modal .skin-edit-layout {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.15fr);
+    gap: 26px;
+    align-items: flex-start;
+}
+
+.resource-edit-modal .skin-edit-preview-panel,
+.resource-edit-modal .skin-edit-info-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+}
+
+.resource-edit-modal .skin-edit-preview-panel {
+    gap: 12px;
+}
+
+.resource-edit-modal .skin-edit-info-panel {
+    gap: 16px;
+}
+
+.resource-edit-modal .skin-edit-cover {
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(245, 247, 250, 0.98), rgba(235, 238, 243, 0.98));
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.resource-edit-modal .skin-edit-cover:hover {
+    border-color: rgba(255, 153, 0, 0.55);
+}
+
+.resource-edit-modal .skin-edit-cover img {
+    object-fit: contain;
+}
+
+.resource-edit-modal .skin-edit-cover-action {
+    inset: auto 0 16px 0;
+    width: auto;
+    height: auto;
+    background: transparent;
+    pointer-events: none;
+}
+
+.resource-edit-modal .skin-edit-cover-action span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.resource-edit-modal .skin-edit-cover-action i {
+    font-size: 15px;
+    color: var(--primary);
+}
+
+.resource-edit-modal .skin-edit-cover-tip {
+    margin: 12px 0 0;
+    color: var(--text-sec);
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: center;
+    opacity: 0.8;
+}
+
+.resource-edit-modal h2 {
+    margin: 0 0 6px;
+    color: var(--text-main);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    line-height: 1.25;
+    text-align: left;
+}
+
+.resource-edit-modal .subtitle {
+    margin: 0;
+    color: var(--text-sec);
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.5;
+    opacity: 0.9;
+}
+
+.resource-edit-modal .skin-edit-tags {
+    display: flex;
+    gap: 8px;
+    margin: 12px 0 16px;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.resource-edit-modal .skin-edit-tags span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: default;
+    user-select: none;
+}
+
+.resource-edit-modal .skin-edit-tags span.tag-local {
+    background: rgba(245, 158, 11, 0.08);
+    color: #D97706;
+    border: 1px solid rgba(245, 158, 11, 0.15);
+}
+
+.resource-edit-modal .skin-edit-tags span.tag-import {
+    background: rgba(59, 130, 246, 0.08);
+    color: #2563EB;
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+.resource-edit-modal .skin-edit-tags span i {
+    font-size: 12px;
+}
+
+.resource-edit-modal .edit-skin-form {
+    padding: 0;
+}
+
+.resource-edit-modal .skin-edit-field {
+    margin: 0 0 14px;
+}
+
+.resource-edit-modal .skin-edit-field label {
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.resource-edit-modal .skin-edit-input-wrap {
+    position: relative;
+}
+
+.resource-edit-modal .form-group input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    outline: none;
+    background: rgba(15, 23, 42, 0.02);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    color: var(--text-main);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
+}
+
+.resource-edit-modal .form-group input:hover {
+    border-color: rgba(255, 153, 0, 0.4);
+    background: rgba(15, 23, 42, 0.01);
+}
+
+.resource-edit-modal .form-group input:focus {
+    border-color: var(--primary);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 4px rgba(255, 153, 0, 0.12);
+}
+
+.resource-edit-modal .skin-edit-input-wrap input {
+    padding-right: 56px;
+}
+
+.resource-edit-modal .skin-edit-input-wrap span {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-sec);
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.resource-edit-modal .skin-rename-rule {
+    display: grid;
+    gap: 4px;
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(255, 153, 0, 0.03);
+    border-left: 3px solid var(--primary);
+    color: var(--text-sec);
+    font-size: 11px;
+    line-height: 1.6;
+    text-align: left;
+    justify-items: start;
+    transition: all 0.3s ease;
+}
+
+.resource-edit-modal .skin-rename-rule strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 2px;
+}
+
+.resource-edit-modal .skin-rename-rule strong i {
+    color: var(--primary);
+    font-size: 13px;
+}
+
+.resource-edit-modal .skin-rename-rule span {
+    display: block;
+    text-align: left;
+    opacity: 0.9;
+    padding-left: 14px;
+    position: relative;
+}
+
+.resource-edit-modal .skin-rename-rule span::before {
+    content: "•";
+    position: absolute;
+    left: 4px;
+    color: var(--primary);
+    font-weight: 800;
+}
+
+.resource-edit-modal .modal-actions {
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.resource-edit-modal .modal-actions .btn {
+    min-width: 84px;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+}
+
+.resource-edit-modal .modal-actions .btn.secondary {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-sec);
+}
+
+.resource-edit-modal .modal-actions .btn.secondary:hover {
+    background: rgba(15, 23, 42, 0.04);
+    color: var(--text-main);
+    border-color: rgba(15, 23, 42, 0.15);
+}
+
+.resource-edit-modal .modal-actions .btn.primary {
+    min-width: 116px;
+    background: linear-gradient(135deg, #ff9e00 0%, #ff5500 100%);
+    border: none;
+    color: white;
+    box-shadow: 0 4px 12px rgba(255, 85, 0, 0.25);
+}
+
+.resource-edit-modal .modal-actions .btn.primary:hover {
+    transform: translateY(-1.5px);
+    box-shadow: 0 6px 18px rgba(255, 85, 0, 0.4);
+    filter: brightness(1.03);
+}
+
+.resource-edit-modal .modal-actions .btn.primary:active {
+    transform: translateY(0.5px);
+    box-shadow: 0 2px 6px rgba(255, 85, 0, 0.2);
+    filter: brightness(0.97);
+}
+
+[data-theme='dark'] .resource-edit-modal .modal-content.skin-edit-dialog {
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.65), 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-edit-cover {
+    border-color: rgba(255, 255, 255, 0.08);
+    background: linear-gradient(135deg, rgba(36, 39, 45, 0.98), rgba(24, 27, 33, 0.98));
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-edit-cover-action span {
+    background: rgba(31, 35, 43, 0.92);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: var(--text-main);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-edit-tags {
+    background: transparent;
+    border: none;
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-edit-tags span.tag-local {
+    background: rgba(245, 158, 11, 0.12);
+    color: #FBBF24;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-edit-tags span.tag-import {
+    background: rgba(59, 130, 246, 0.12);
+    color: #60A5FA;
+    border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+[data-theme='dark'] .resource-edit-modal .form-group input {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] .resource-edit-modal .form-group input:hover {
+    border-color: rgba(251, 191, 36, 0.4);
+}
+
+[data-theme='dark'] .resource-edit-modal .form-group input:focus {
+    background: rgba(0, 0, 0, 0.2);
+    border-color: #FBBF24;
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.15);
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-rename-rule {
+    background: rgba(251, 191, 36, 0.05);
+    border-left-color: #FBBF24;
+}
+
+[data-theme='dark'] .resource-edit-modal .skin-rename-rule strong i,
+[data-theme='dark'] .resource-edit-modal .skin-rename-rule span::before {
+    color: #FBBF24;
+}
+
+[data-theme='dark'] .resource-edit-modal .modal-actions .btn.secondary:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme='dark'] .resource-edit-modal .modal-actions .btn.primary {
+    background: linear-gradient(135deg, #FBBF24 0%, #F59E0B 100%);
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+}
+
+[data-theme='dark'] .resource-edit-modal .modal-actions .btn.primary:hover {
+    box-shadow: 0 6px 18px rgba(245, 158, 11, 0.4);
+}
+
+@media (max-width: 860px) {
+    .resource-edit-modal .modal-content.skin-edit-dialog {
+        width: calc(100vw - 32px);
+        padding: 20px;
+    }
+
+    .resource-edit-modal .skin-edit-layout {
+        grid-template-columns: 1fr;
+        gap: 24px;
+    }
 }

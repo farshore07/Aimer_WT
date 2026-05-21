@@ -221,6 +221,29 @@ const app = {
         return window.I18N ? I18N.t(key, params) : key;
     },
 
+    detectPreferredUiLanguage() {
+        const languages = [];
+        if (Array.isArray(navigator.languages)) languages.push(...navigator.languages);
+        if (navigator.language) languages.push(navigator.language);
+        if (navigator.userLanguage) languages.push(navigator.userLanguage);
+
+        for (const lang of languages) {
+            const normalized = String(lang || "").toLowerCase().replace("_", "-");
+            if (!normalized) continue;
+            if (
+                normalized === "zh-tw" ||
+                normalized === "zh-hk" ||
+                normalized === "zh-mo" ||
+                normalized.includes("hant")
+            ) {
+                return "zh_tw";
+            }
+            if (normalized.startsWith("en")) return "en_us";
+            if (normalized.startsWith("zh")) return "zh_cn";
+        }
+        return "zh_cn";
+    },
+
     applyUiLanguage(locale) {
         if (!window.I18N) return "zh_cn";
         const applied = I18N.setLocale(locale || "zh_cn");
@@ -579,7 +602,8 @@ const app = {
         if (query) {
             items = items.filter(it => {
                 const searchText = [
-                    it.name,
+                    it.display_name,
+                    it.folder_name || it.name,
                     it.path,
                     it.preview_path,
                     it.file_count,
@@ -592,7 +616,9 @@ const app = {
         const sortKey = this._skinsSortKey || "update_time";
         items.sort((a, b) => {
             if (sortKey === "name") {
-                return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", { numeric: true });
+                const aName = String(a.display_name || a.name || "");
+                const bName = String(b.display_name || b.name || "");
+                return aName.localeCompare(bName, "zh-CN", { numeric: true });
             }
             if (sortKey === "size") {
                 return Number(b.size_bytes || 0) - Number(a.size_bytes || 0);
@@ -645,26 +671,36 @@ const app = {
 
             const chunk = items.slice(currentIndex, currentIndex + CHUNK_SIZE);
             const html = chunk.map(it => {
+                const folderName = String(it.name || "");
+                const displayName = String(it.display_name || folderName);
                 const cover = it.cover_url || placeholder;
                 const isDefaultCover = !!it.cover_is_default || !it.cover_url || !it.preview_path;
                 const sizeText = app._formatBytes(it.size_bytes || 0);
-                const safeName = app._escapeHtml(it.name);
+                const safeName = app._escapeHtml(folderName);
+                const safeDisplayName = app._escapeHtml(displayName);
+                const encodedName = encodeURIComponent(folderName);
+                const cardTitle = app._escapeHtml(
+                    displayName === folderName
+                        ? String(it.path || '')
+                        : `${displayName}\n原始文件夹名: ${folderName}\n${it.path || ''}`
+                );
 
                 return `
-                    <div class="small-card animate-in" title="${app._escapeHtml(it.path || '')}" data-skin-name="${safeName}">
+                    <div class="small-card animate-in" title="${cardTitle}" data-skin-name="${safeName}">
                         <div class="small-card-img-wrapper" style="position:relative;">
                              <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''} skin-img-node"
                                   src="${cover}" loading="lazy" alt="">
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn"
-                                         onclick="app.openEditSkinModal('${safeName}', this.closest('.small-card').querySelector('.skin-img-node').src)">
+                                         data-skin-name-encoded="${encodedName}"
+                                         onclick="app.openEditSkinModal(decodeURIComponent(this.dataset.skinNameEncoded || ''), this.closest('.small-card').querySelector('.skin-img-node').src)">
                                      <i class="ri-edit-line"></i>
                                  </button>
                              </div>
                         </div>
                         <div class="small-card-body">
                             <div class="skin-card-footer">
-                                <div class="skin-card-name" title="${safeName}">${safeName}</div>
+                                <div class="skin-card-name" title="${safeDisplayName}">${safeDisplayName}</div>
                                 <div class="skin-card-size">${sizeText}</div>
                             </div>
                         </div>
@@ -697,9 +733,9 @@ const app = {
     },
 
     // 接收后端异步推送的封面数据
-    onSkinCoverReady(skinName, coverUrl) {
+    onSkinCoverReady(skinName, coverUrl, coverIsDefault) {
         const item = (this._skinsItems || []).find(it => it && it.name === skinName);
-        const isDefaultCover = item ? !item.preview_path : false;
+        const isDefaultCover = coverIsDefault !== undefined ? !!coverIsDefault : (item ? !item.preview_path : false);
         if (item) {
             item.cover_url = coverUrl;
             item.cover_is_default = isDefaultCover;
@@ -720,17 +756,40 @@ const app = {
     currentEditSight: null,
     _cropCoverTarget: "skin",
 
+    _updateSkinDisplayNameCount() {
+        const input = document.getElementById('edit-skin-display-name');
+        const counter = document.getElementById('edit-skin-display-count');
+        if (!input || !counter) return;
+        counter.textContent = `${String(input.value || '').length}/32`;
+    },
+
+    _updateSightDisplayNameCount() {
+        const input = document.getElementById('edit-sight-display-name');
+        const counter = document.getElementById('edit-sight-display-count');
+        if (!input || !counter) return;
+        counter.textContent = `${String(input.value || '').length}/32`;
+    },
+
     openEditSkinModal(skinName, coverUrl) {
         this.currentEditSkin = skinName;
         this._cropCoverTarget = "skin";
         const modal = document.getElementById('modal-edit-skin');
+        const displayInput = document.getElementById('edit-skin-display-name');
         const nameInput = document.getElementById('edit-skin-name');
         const coverImg = document.getElementById('edit-skin-cover');
 
-        if (!modal || !nameInput || !coverImg) return;
+        if (!modal || !displayInput || !nameInput || !coverImg) return;
 
-        nameInput.value = skinName;
+        const item = (this._skinsItems || []).find(it => it && it.name === skinName);
+        displayInput.value = item?.display_name || skinName;
+        nameInput.value = item?.folder_name || skinName;
         coverImg.src = coverUrl || 'assets/coming_soon_img.png';
+        this._updateSkinDisplayNameCount();
+
+        if (displayInput.dataset.countBound !== '1') {
+            displayInput.dataset.countBound = '1';
+            displayInput.addEventListener('input', () => this._updateSkinDisplayNameCount());
+        }
 
         modal.classList.remove('hiding');
         modal.classList.add('show');
@@ -739,23 +798,34 @@ const app = {
     async saveSkinEdit() {
         if (!this.currentEditSkin) return;
 
-        const newName = document.getElementById('edit-skin-name').value.trim();
+        const displayInput = document.getElementById('edit-skin-display-name');
+        const folderInput = document.getElementById('edit-skin-name');
+        const displayName = String(displayInput?.value || '').trim();
+        const newName = String(folderInput?.value || '').trim();
+
+        if (!displayName) {
+            app.showAlert(app.t("common.error"), "显示名称不能为空", "error");
+            return;
+        }
+
+        if (displayName.length > 32) {
+            app.showAlert(app.t("common.error"), "显示名称不能超过 32 个字符", "error");
+            return;
+        }
+
         if (!newName) {
             app.showAlert(app.t("common.error"), app.t("tools.name_empty"), "error");
             return;
         }
 
         if (newName !== this.currentEditSkin) {
-            // Rename logic
             try {
                 const res = await pywebview.api.rename_skin(this.currentEditSkin, newName);
                 if (res.success) {
-                    app.showAlert(app.t("common.success"), app.t("tools.rename_success"), "success");
-                    this.currentEditSkin = newName; // Update local ref
-                    this.refreshSkins(); // Reload list
+                    this.currentEditSkin = newName;
                 } else {
                     app.showAlert(app.t("common.failure"), app.t("tools.rename_failed", { message: res.msg }), "error");
-                    return; // Stop if rename failed
+                    return;
                 }
             } catch (e) {
                 app.showAlert(app.t("common.error"), app.t("common.operation_failed", { message: e }), "error");
@@ -763,8 +833,19 @@ const app = {
             }
         }
 
+        try {
+            const res = await pywebview.api.set_resource_display_name('skins', this.currentEditSkin, displayName);
+            if (!res || !res.success) {
+                app.showAlert(app.t("common.failure"), (res && res.msg) ? res.msg : "显示名称保存失败", "error");
+                return;
+            }
+        } catch (e) {
+            app.showAlert(app.t("common.error"), app.t("common.operation_failed", { message: e }), "error");
+            return;
+        }
+
+        app.showAlert(app.t("common.success"), "涂装信息已保存", "success");
         app.closeModal('modal-edit-skin');
-        // Refresh to reflect changes (especially if cover was updated separately)
         this.refreshSkins();
     },
 
@@ -800,13 +881,22 @@ const app = {
         this.currentEditSight = sightName;
         this._cropCoverTarget = "sight";
         const modal = document.getElementById('modal-edit-sight');
+        const displayInput = document.getElementById('edit-sight-display-name');
         const nameInput = document.getElementById('edit-sight-name');
         const coverImg = document.getElementById('edit-sight-cover');
 
-        if (!modal || !nameInput || !coverImg) return;
+        if (!modal || !displayInput || !nameInput || !coverImg) return;
 
-        nameInput.value = sightName;
+        const item = (this._sightsItems || []).find(it => it && it.name === sightName);
+        displayInput.value = item?.display_name || sightName;
+        nameInput.value = item?.folder_name || sightName;
         coverImg.src = coverUrl || 'assets/coming_soon_img.png';
+        this._updateSightDisplayNameCount();
+
+        if (displayInput.dataset.countBound !== '1') {
+            displayInput.dataset.countBound = '1';
+            displayInput.addEventListener('input', () => this._updateSightDisplayNameCount());
+        }
 
         modal.classList.remove('hiding');
         modal.classList.add('show');
@@ -815,7 +905,17 @@ const app = {
     async saveSightEdit() {
         if (!this.currentEditSight) return;
 
+        const displayInput = document.getElementById('edit-sight-display-name');
+        const displayName = String(displayInput?.value || '').trim();
         const newName = document.getElementById('edit-sight-name').value.trim();
+        if (!displayName) {
+            app.showAlert(app.t("common.error"), "显示名称不能为空", "error");
+            return;
+        }
+        if (displayName.length > 32) {
+            app.showAlert(app.t("common.error"), "显示名称不能超过 32 个字符", "error");
+            return;
+        }
         if (!newName) {
             app.showAlert(app.t("common.error"), app.t("tools.name_empty"), "error");
             return;
@@ -825,9 +925,7 @@ const app = {
             try {
                 const res = await pywebview.api.rename_sight(this.currentEditSight, newName);
                 if (res.success) {
-                    app.showAlert(app.t("common.success"), app.t("tools.rename_success"), "success");
                     this.currentEditSight = newName;
-                    this.refreshSights({ manual: true });
                 } else {
                     app.showAlert(app.t("common.failure"), app.t("tools.rename_failed", { message: res.msg }), "error");
                     return;
@@ -838,6 +936,18 @@ const app = {
             }
         }
 
+        try {
+            const res = await pywebview.api.set_resource_display_name('sights', this.currentEditSight, displayName);
+            if (!res || !res.success) {
+                app.showAlert(app.t("common.failure"), (res && res.msg) ? res.msg : "显示名称保存失败", "error");
+                return;
+            }
+        } catch (e) {
+            app.showAlert(app.t("common.error"), app.t("common.operation_failed", { message: e }), "error");
+            return;
+        }
+
+        app.showAlert(app.t("common.success"), "炮镜信息已保存", "success");
         app.closeModal('modal-edit-sight');
         this.refreshSights({ manual: true });
     },
@@ -3967,9 +4077,9 @@ app.init = async function () {
             active_theme: "default.json",
             theme: "Light",
             installed_mods: [],
-            ui_language: "zh_cn",
+            ui_language: "",
         };
-        this.applyUiLanguage(state.ui_language || "zh_cn");
+        this.applyUiLanguage(state.ui_language || this.detectPreferredUiLanguage());
 
         // 1.1 检查免责声明
         const disclaimerAccepted = await app.checkDisclaimer();
@@ -4614,7 +4724,9 @@ app.openSightsFolder = async function () {
 };
 
 app.refreshSights = async function (opts) {
-    if (!this.sightsPath || !window.pywebview?.api?.get_sights_list) return;
+    if (!this.sightsPath || !window.pywebview?.api) return;
+    const canAsyncRefresh = typeof pywebview.api.refresh_sights_async === 'function';
+    if (!canAsyncRefresh && typeof pywebview.api.get_sights_list !== 'function') return;
 
     const camoPage = document.getElementById('page-camo');
     const sightsView = document.getElementById('view-sights');
@@ -4634,6 +4746,7 @@ app.refreshSights = async function (opts) {
 
     const listEl = document.getElementById('sights-list');
     const countEl = document.getElementById('sights-count');
+    let waitingForAsyncPush = false;
 
     try {
         if (refreshBtn) {
@@ -4644,6 +4757,12 @@ app.refreshSights = async function (opts) {
         await new Promise(requestAnimationFrame);
 
         const forceRefresh = !!(opts && opts.manual);
+        if (canAsyncRefresh) {
+            waitingForAsyncPush = true;
+            pywebview.api.refresh_sights_async({ force_refresh: forceRefresh });
+            return;
+        }
+
         const result = await pywebview.api.get_sights_list({ force_refresh: forceRefresh });
         if (seq !== this._sightsRefreshSeq) return;
         if (!camoPage.classList.contains('active')) return;
@@ -4659,8 +4778,36 @@ app.refreshSights = async function (opts) {
         this._sightsLoaded = true;
     } catch (e) {
         console.error(e);
+        waitingForAsyncPush = false;
     } finally {
-        if (seq === this._sightsRefreshSeq) this._sightsRefreshing = false;
+        if (!waitingForAsyncPush && seq === this._sightsRefreshSeq) this._sightsRefreshing = false;
+        if (!waitingForAsyncPush && refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.classList.remove('is-loading');
+        }
+    }
+};
+
+app.onSightsListReady = function (result) {
+    const refreshBtn = document.getElementById('btn-refresh-sights');
+    const camoPage = document.getElementById('page-camo');
+    const sightsView = document.getElementById('view-sights');
+
+    try {
+        if (!camoPage || !sightsView) return;
+        if (!camoPage.classList.contains('active')) return;
+        if (!sightsView.classList.contains('active')) return;
+
+        this._sightsItems = Array.isArray(result?.items) ? result.items : [];
+        const searchInput = document.getElementById('sights-search-input');
+        const sortSelect = document.getElementById('sights-sort-select');
+        if (searchInput) this._sightsSearchQuery = searchInput.value || "";
+        if (sortSelect) this._sightsSortKey = sortSelect.value || "update_time";
+        this._renderSightsView();
+        this.updateResourceStorage('sights');
+        this._sightsLoaded = true;
+    } finally {
+        this._sightsRefreshing = false;
         if (refreshBtn) {
             refreshBtn.disabled = false;
             refreshBtn.classList.remove('is-loading');
@@ -4685,6 +4832,8 @@ app._getFilteredSights = function () {
     if (query) {
         items = items.filter(item => {
             const searchText = [
+                item.display_name,
+                item.folder_name || item.name,
                 item.name,
                 item.path,
                 item.preview_path,
@@ -4698,7 +4847,9 @@ app._getFilteredSights = function () {
     const sortKey = this._sightsSortKey || "update_time";
     items.sort((a, b) => {
         if (sortKey === "name") {
-            return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", { numeric: true });
+            const aName = String(a.display_name || a.name || "");
+            const bName = String(b.display_name || b.name || "");
+            return aName.localeCompare(bName, "zh-CN", { numeric: true });
         }
         if (sortKey === "size") {
             return Number(b.size_bytes || 0) - Number(a.size_bytes || 0);
@@ -4740,21 +4891,29 @@ app._renderSightsView = function () {
 
     const placeholder = 'assets/card_image_small.png';
     listEl.innerHTML = items.map(item => {
+        const folderName = String(item.name || "");
+        const displayName = String(item.display_name || folderName);
         const cover = item.cover_url || placeholder;
         const isDefaultCover = !!item.cover_is_default;
+        const safeDisplayName = app._escapeHtml(displayName);
+        const cardTitle = app._escapeHtml(displayName === folderName
+            ? String(item.path || "")
+            : `${displayName}\n原始文件夹名: ${folderName}\n${item.path || ""}`);
+        const encodedName = encodeURIComponent(folderName);
         return `
-            <div class="small-card">
+            <div class="small-card" title="${cardTitle}">
                 <div class="small-card-img-wrapper" style="position:relative;">
                     <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''}" src="${cover}" alt="">
                     <div class="skin-edit-overlay">
                         <button class="btn-v2 icon-only small secondary skin-edit-btn"
-                                onclick="app.openEditSightModal('${app._escapeHtml(item.name)}', '${cover.replace(/'/g, "\\'")}')">
+                                data-sight-name-encoded="${encodedName}"
+                                onclick="app.openEditSightModal(decodeURIComponent(this.dataset.sightNameEncoded || ''), '${cover.replace(/'/g, "\\'")}')">
                             <i class="ri-edit-line"></i>
                         </button>
                     </div>
                 </div>
                 <div class="small-card-body">
-                    <div class="small-card-title">${app._escapeHtml(item.name)}</div>
+                    <div class="small-card-title" title="${safeDisplayName}">${safeDisplayName}</div>
                     <div class="small-card-meta">
                         <span><i class="ri-file-list-3-line"></i> ${item.file_count} 文件</span>
                     </div>

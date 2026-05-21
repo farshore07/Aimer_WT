@@ -1,6 +1,17 @@
 (function () {
     const DEFAULT_LOCALE = "zh_cn";
-    const SUPPORTED_LOCALES = ["zh_cn", "en_us"];
+    const SUPPORTED_LOCALES = ["zh_cn", "zh_tw", "en_us"];
+    const HTML_LANG_MAP = {
+        zh_cn: "zh-CN",
+        zh_tw: "zh-TW",
+        en_us: "en-US"
+    };
+    const LOCALE_NAMES = {
+        zh_cn: "简体中文",
+        zh_tw: "繁體中文",
+        en_us: "English"
+    };
+    const ONLINE_FEATURE_LOCALES = ["zh_cn", "zh_tw"];
 
     function normalize_locale(locale) {
         return SUPPORTED_LOCALES.includes(locale) ? locale : DEFAULT_LOCALE;
@@ -57,17 +68,17 @@
         setLocale(locale) {
             const normalized = normalize_locale(locale);
             this.currentLocale = normalized;
-            document.documentElement.lang = normalized === "en_us" ? "en-US" : "zh-CN";
+            document.documentElement.lang = HTML_LANG_MAP[normalized] || HTML_LANG_MAP[DEFAULT_LOCALE];
             this.applyToDOM();
             return normalized;
         },
 
         getLocaleName(locale) {
-            return normalize_locale(locale) === "en_us" ? "English" : "简体中文";
+            return LOCALE_NAMES[normalize_locale(locale)] || LOCALE_NAMES[DEFAULT_LOCALE];
         },
 
         isOnlineFeatureAvailable() {
-            return this.currentLocale === DEFAULT_LOCALE;
+            return ONLINE_FEATURE_LOCALES.includes(this.currentLocale);
         }
     };
 })();

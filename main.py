@@ -4159,6 +4159,156 @@ class AppApi:
                 "reason": str(e),
             }
 
+    def _resource_display_root_path(self, resource_type: str) -> Path | None:
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key == "skins":
+            return self._skins_mgr.get_userskins_dir(self._cfg_mgr.get_game_path())
+        if resource_key == "sights":
+            path = self._sights_mgr.get_usersights_path()
+            return Path(path) if path else None
+        if resource_key == "tasks":
+            return self._task_mgr.task_library_dir
+        if resource_key == "models":
+            return self._model_mgr.model_library_dir
+        if resource_key == "hangar":
+            return self._hangar_mgr.hangar_library_dir
+        return None
+
+    def _resource_display_root_key(self, resource_type: str) -> str:
+        root_path = self._resource_display_root_path(resource_type)
+        if root_path is None:
+            return ""
+        try:
+            resolved = root_path.resolve(strict=False)
+        except Exception:
+            resolved = root_path
+        return os.path.normcase(os.path.normpath(str(resolved)))
+
+    def _migrate_legacy_skin_display_names(self, store: dict) -> None:
+        legacy = self._cfg_mgr.config.get("skin_display_names")
+        if not isinstance(legacy, dict):
+            if "skin_display_names" in self._cfg_mgr.config:
+                self._cfg_mgr.config.pop("skin_display_names", None)
+                self._cfg_mgr.save_config()
+            return
+        if legacy:
+            skins_store = store.setdefault("skins", {})
+            if isinstance(skins_store, dict):
+                for root_key, entries in legacy.items():
+                    if root_key not in skins_store and isinstance(entries, dict):
+                        skins_store[root_key] = entries
+        self._cfg_mgr.config.pop("skin_display_names", None)
+        self._cfg_mgr.save_config()
+
+    def _resource_display_entries(self, resource_type: str, create: bool = True) -> dict:
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key not in {"skins", "sights", "tasks", "models", "hangar"}:
+            return {}
+
+        store = self._cfg_mgr.config.get("resource_display_names")
+        if not isinstance(store, dict):
+            if not create and "skin_display_names" not in self._cfg_mgr.config:
+                return {}
+            store = {}
+            self._cfg_mgr.config["resource_display_names"] = store
+
+        self._migrate_legacy_skin_display_names(store)
+
+        type_store = store.get(resource_key)
+        if not isinstance(type_store, dict):
+            if not create:
+                return {}
+            type_store = {}
+            store[resource_key] = type_store
+
+        root_key = self._resource_display_root_key(resource_key)
+        if not root_key:
+            return {}
+
+        entries = type_store.get(root_key)
+        if not isinstance(entries, dict):
+            if not create:
+                return {}
+            entries = {}
+            type_store[root_key] = entries
+        return entries
+
+    def _apply_resource_display_names(self, resource_type: str, data):
+        entries = self._resource_display_entries(resource_type, create=False)
+        items = data.get("items") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return data
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            folder_name = str(item.get("name") or "")
+            display_name = str(entries.get(folder_name) or "").strip()
+            item["folder_name"] = folder_name
+            item["display_name"] = display_name or folder_name
+        return data
+
+    def _move_resource_display_name(self, resource_type: str, old_name, new_name) -> None:
+        entries = self._resource_display_entries(resource_type, create=False)
+        old_key = str(old_name or "").strip()
+        new_key = str(new_name or "").strip()
+        if not old_key or not new_key or old_key == new_key:
+            return
+        if old_key in entries:
+            entries[new_key] = entries.pop(old_key)
+            self._cfg_mgr.save_config()
+
+    def _prune_resource_display_entries(self, resource_type: str) -> None:
+        resource_key = str(resource_type or "").strip().lower()
+        store = self._cfg_mgr.config.get("resource_display_names")
+        if not isinstance(store, dict):
+            return
+        type_store = store.get(resource_key)
+        if not isinstance(type_store, dict):
+            return
+        root_key = self._resource_display_root_key(resource_key)
+        entries = type_store.get(root_key)
+        if isinstance(entries, dict) and not entries:
+            type_store.pop(root_key, None)
+        if not type_store:
+            store.pop(resource_key, None)
+
+    def set_resource_display_name(self, resource_type, folder_name, display_name):
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key not in {"skins", "sights", "tasks", "models", "hangar"}:
+            return {"success": False, "msg": "资源类型不支持"}
+
+        folder_name = str(folder_name or "").strip()
+        display_name = str(display_name or "").strip()
+
+        if not folder_name:
+            return {"success": False, "msg": "原始文件夹名不能为空"}
+        if not display_name:
+            return {"success": False, "msg": "显示名称不能为空"}
+        if len(display_name) > 32:
+            return {"success": False, "msg": "显示名称不能超过 32 个字符"}
+        if any(ord(ch) < 32 for ch in display_name):
+            return {"success": False, "msg": "显示名称不能包含控制字符"}
+
+        root_path = self._resource_display_root_path(resource_key)
+        item_dir = (root_path / folder_name) if root_path else None
+        if not item_dir or not item_dir.exists():
+            return {"success": False, "msg": f"找不到资源文件夹: {folder_name}"}
+
+        entries = self._resource_display_entries(resource_key)
+        if display_name == folder_name:
+            entries.pop(folder_name, None)
+            self._prune_resource_display_entries(resource_key)
+        else:
+            entries[folder_name] = display_name
+
+        if not self._cfg_mgr.save_config():
+            return {"success": False, "msg": "显示名称保存失败"}
+        return {"success": True}
+
+    def set_skin_display_name(self, folder_name, display_name):
+        return self.set_resource_display_name("skins", folder_name, display_name)
+
     def refresh_skins_async(self, opts=None):
         """
         先传回基本信息，再异步推送封面数据。
@@ -4179,6 +4329,7 @@ class AppApi:
                     game_path, default_cover_path=default_cover_path,
                     force_refresh=force_refresh, skip_covers=True
                 )
+                self._apply_resource_display_names("skins", data)
                 data["valid"] = True
 
                 # 推送基本列表到前端，让界面先渲染出来
@@ -4186,22 +4337,22 @@ class AppApi:
                     js_data = json.dumps(data, ensure_ascii=False)
                     self._window.evaluate_js(f"if(app.onSkinsListReady) app.onSkinsListReady({js_data})")
 
-                items = data.get("items", [])
+                full_data = self._skins_mgr.scan_userskins(
+                    game_path, default_cover_path=default_cover_path,
+                    force_refresh=force_refresh, skip_covers=False
+                )
+                items = full_data.get("items", [])
                 for it in items:
                     name = it.get("name")
-                    preview_path = it.get("preview_path")
-                    cover_url = ""
-
-                    if preview_path and Path(preview_path).exists():
-                        cover_url = self._skins_mgr._to_data_url(Path(preview_path))
-                    elif default_cover_path.exists():
-                        cover_url = self._skins_mgr._to_data_url(default_cover_path)
+                    cover_url = it.get("cover_url") or ""
+                    cover_is_default = bool(it.get("cover_is_default"))
 
                     if self._window and cover_url:
                         # 单条推送，避免大数据包造成的卡顿
                         name_js = json.dumps(name, ensure_ascii=False)
                         url_js = json.dumps(cover_url, ensure_ascii=True)
-                        self._window.evaluate_js(f"if(app.onSkinCoverReady) app.onSkinCoverReady({name_js}, {url_js})")
+                        default_js = json.dumps(cover_is_default)
+                        self._window.evaluate_js(f"if(app.onSkinCoverReady) app.onSkinCoverReady({name_js}, {url_js}, {default_js})")
             except Exception as e:
                 log.error(f"后台刷新涂装库失败: {e}")
 
@@ -4214,6 +4365,7 @@ class AppApi:
         default_cover_path = WEB_DIR / "assets" / "card_image_small.png"
         force_refresh = bool(opts.get("force_refresh")) if opts else False
         data = self._skins_mgr.scan_userskins(path, default_cover_path, force_refresh)
+        self._apply_resource_display_names("skins", data)
         data["valid"] = True
         return data
 
@@ -4297,6 +4449,7 @@ class AppApi:
         path = self._cfg_mgr.get_game_path()
         try:
             self._skins_mgr.rename_skin(path, old_name, new_name)
+            self._move_resource_display_name("skins", old_name, new_name)
             return {"success": True}
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -4889,6 +5042,7 @@ class AppApi:
             res = self._sights_mgr.scan_sights(
                 force_refresh=force_refresh, default_cover_path=default_cover_path
             )
+            self._apply_resource_display_names("sights", res)
             if self._perf_enabled and t0 is not None:
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 log.debug(f"[PERF] get_sights_list {dt_ms:.1f}ms items={len(res.get('items') or [])}")
@@ -4897,10 +5051,37 @@ class AppApi:
             log.error(f"扫描炮镜失败: {e}")
             return {"exists": False, "items": []}
 
+    def refresh_sights_async(self, opts=None):
+        """后台刷新炮镜列表，完成后推送到前端。"""
+        force_refresh = False
+        if isinstance(opts, dict):
+            force_refresh = bool(opts.get("force_refresh"))
+
+        def _worker():
+            try:
+                default_cover_path = WEB_DIR / "assets" / "card_image_small.png"
+                res = self._sights_mgr.scan_sights(
+                    force_refresh=force_refresh,
+                    default_cover_path=default_cover_path
+                )
+                self._apply_resource_display_names("sights", res)
+                if self._window:
+                    js_data = json.dumps(res, ensure_ascii=False)
+                    self._window.evaluate_js(f"if(app.onSightsListReady) app.onSightsListReady({js_data})")
+            except Exception as e:
+                log.error(f"后台刷新炮镜库失败: {e}")
+                if self._window:
+                    fallback = json.dumps({"exists": False, "items": []}, ensure_ascii=False)
+                    self._window.evaluate_js(f"if(app.onSightsListReady) app.onSightsListReady({fallback})")
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     def rename_sight(self, old_name, new_name):
         # 重命名 UserSights 下的炮镜文件夹。
         try:
             self._sights_mgr.rename_sight(old_name, new_name)
+            self._move_resource_display_name("sights", old_name, new_name)
             return {"success": True}
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -5106,6 +5287,7 @@ class AppApi:
         try:
             force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
             items = self._task_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("tasks", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取任务列表失败: {e}")
@@ -5115,6 +5297,7 @@ class AppApi:
         """重命名任务库中的子文件夹。"""
         try:
             self._task_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("tasks", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
@@ -5138,6 +5321,7 @@ class AppApi:
         try:
             force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
             items = self._model_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("models", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取模型列表失败: {e}")
@@ -5147,6 +5331,7 @@ class AppApi:
         """重命名模型库中的子文件夹。"""
         try:
             self._model_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("models", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
@@ -5170,6 +5355,7 @@ class AppApi:
         try:
             force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
             items = self._hangar_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("hangar", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取机库列表失败: {e}")
@@ -5179,6 +5365,7 @@ class AppApi:
         """重命名机库中的子文件夹。"""
         try:
             self._hangar_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("hangar", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
