@@ -440,6 +440,94 @@
     border-color: rgba(255, 153, 0, 0.62);
 }
 
+.res-ops-actions.res-ops-actions-four {
+    grid-template-columns: repeat(4, 1fr);
+}
+
+.res-ops-actions button {
+    color: var(--primary);
+}
+
+.res-ops-actions button i {
+    color: inherit;
+}
+
+.res-ops-actions button:disabled {
+    color: var(--text-sec);
+    opacity: 0.38;
+    cursor: not-allowed;
+    background: transparent;
+}
+
+.res-ops-actions button.danger-action {
+    color: #e5484d;
+}
+
+.res-ops-actions button.danger-action:disabled {
+    color: var(--text-sec);
+}
+
+.small-card.is-disabled-resource {
+    opacity: 0.72;
+}
+
+.resource-status-badge {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    z-index: 2;
+    padding: 3px 7px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    color: #fff;
+    background: rgba(127, 127, 127, 0.88);
+}
+
+.resource-status-badge.is-disabled {
+    background: rgba(107, 114, 128, 0.9);
+}
+
+.sight-import-target-modal {
+    max-width: 520px;
+}
+
+.sight-import-target-options {
+    display: grid;
+    gap: 10px;
+    margin: 16px 0 12px;
+}
+
+.sight-import-target-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.sight-import-target-option input {
+    accent-color: var(--primary);
+}
+
+.sight-import-target-option span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.sight-import-target-option small {
+    color: var(--text-sec);
+}
+
+.sight-import-target-input {
+    width: 100%;
+    margin-bottom: 16px;
+}
+
 .resource-view-header h2 {
     display: flex;
     align-items: center;

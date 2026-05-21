@@ -431,10 +431,19 @@
                                         <span id="sights-count">共0项</span><br>
                                         <span id="sights-selected-hint">至少选择1个项目</span>
                                     </div>
-                                    <div class="res-ops-actions">
-                                        <button title="禁用"><i class="ri-forbid-line"></i> 禁用</button>
-                                        <button title="删除"><i class="ri-delete-bin-line"></i> 删除</button>
-                                        <button title="导出"><i class="ri-download-line"></i> 导出</button>
+                                    <div class="res-ops-actions res-ops-actions-four">
+                                        <button id="sights-op-open" onclick="app.openSelectedSightFolder()" title="打开">
+                                            <i class="ri-folder-open-line"></i> 打开
+                                        </button>
+                                        <button id="sights-op-enable" onclick="app.enableSelectedSights()" title="启用">
+                                            <i class="ri-play-circle-line"></i> 启用
+                                        </button>
+                                        <button id="sights-op-disable" onclick="app.disableSelectedSights()" title="禁用">
+                                            <i class="ri-forbid-line"></i> 禁用
+                                        </button>
+                                        <button id="sights-op-delete" class="danger-action" onclick="app.deleteSelectedSights()" title="删除">
+                                            <i class="ri-delete-bin-line"></i> 删除
+                                        </button>
                                     </div>
                                 </div>
                                 <!-- UID 选择器保留 -->
@@ -454,6 +463,9 @@
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" id="btn-sights-secondary" onclick="app.openSightsFolder()">
                                             <i class="ri-folder-open-line"></i> 打开 UserSights 文件夹
+                                        </button>
+                                        <button class="res-quick-link" onclick="app.importSightsFileDialog()">
+                                            <i class="ri-upload-cloud-2-line"></i> 导入炮镜文件
                                         </button>
                                         <button class="res-quick-link" id="btn-sights-primary" onclick="app.selectSightsPath()">
                                             <i class="ri-folder-2-line"></i> 手动选择路径

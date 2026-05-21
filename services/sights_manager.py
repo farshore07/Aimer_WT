@@ -24,8 +24,10 @@
 import base64
 import os
 import platform
+import re
 import shutil
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 from typing import Callable, Any
@@ -59,6 +61,7 @@ class SightsManager:
         _cache: 扫描结果缓存
     """
     supported_archive_extensions = (".zip", ".rar", ".7z")
+    disabled_suffix = ".AimerWT_BAN"
     
     def __init__(self, cache_dir: str | Path | None = None):
         """
@@ -68,6 +71,26 @@ class SightsManager:
         self._cache: dict | None = None
         self._cache_signature = None
         self._index_cache = ResourceIndexCache("sights_library", cache_dir=cache_dir)
+
+    def _clear_sights_cache(self) -> None:
+        self._cache = None
+        self._cache_signature = None
+        try:
+            self._index_cache.clear()
+        except Exception:
+            log.debug("清理炮镜索引缓存失败", exc_info=True)
+
+    def _resolve_sight_dir(self, name: str) -> Path:
+        usersights_dir = self._usersights_path
+        if not usersights_dir or not usersights_dir.exists():
+            raise ValueError("UserSights 路径未设置或不存在")
+        folder_name = str(name or "").strip()
+        if not folder_name or Path(folder_name).name != folder_name:
+            raise ValueError("炮镜文件夹名称不合法")
+        sight_dir = usersights_dir / folder_name
+        if not sight_dir.exists() or not sight_dir.is_dir():
+            raise FileNotFoundError(f"炮镜文件夹不存在: {folder_name}")
+        return sight_dir
 
     def discover_usersights_paths(self, configured_sights_path: str | None = None) -> list[dict[str, Any]]:
         """
@@ -290,8 +313,7 @@ class SightsManager:
             raise ValueError("选择的路径不是文件夹")
         
         self._usersights_path = path
-        self._cache = None
-        self._cache_signature = None
+        self._clear_sights_cache()
         log.info(f"UserSights 路径已设置: {path}")
         return True
     
@@ -365,6 +387,8 @@ class SightsManager:
                     sight = {
                         'name': item.name,
                         'path': str(item),
+                        'disabled': item.name.endswith(self.disabled_suffix),
+                        'enabled_name': item.name[:-len(self.disabled_suffix)] if item.name.endswith(self.disabled_suffix) else item.name,
                         'file_count': len(blk_files),
                         'cover_url': cover_url,
                         'cover_is_default': cover_is_default,
@@ -372,6 +396,8 @@ class SightsManager:
                 else:
                     sight['name'] = item.name
                     sight['path'] = str(item)
+                    sight['disabled'] = item.name.endswith(self.disabled_suffix)
+                    sight['enabled_name'] = item.name[:-len(self.disabled_suffix)] if item.name.endswith(self.disabled_suffix) else item.name
 
                 sights.append(sight)
                 next_records[item.name] = self._index_cache.make_record(signature, sight)
@@ -438,6 +464,58 @@ class SightsManager:
             raise OSError(f"重命名失败（权限不足）: {e}")
         except OSError as e:
             raise OSError(f"重命名失败: {e}")
+
+    def disable_sight(self, name: str) -> dict[str, Any]:
+        sight_dir = self._resolve_sight_dir(name)
+        if sight_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": sight_dir.name, "disabled": True}
+        target_dir = sight_dir.with_name(f"{sight_dir.name}{self.disabled_suffix}")
+        if target_dir.exists():
+            raise FileExistsError(f"已存在禁用状态文件夹: {target_dir.name}")
+        sight_dir.rename(target_dir)
+        self._clear_sights_cache()
+        return {"success": True, "name": target_dir.name, "disabled": True}
+
+    def enable_sight(self, name: str) -> dict[str, Any]:
+        sight_dir = self._resolve_sight_dir(name)
+        if not sight_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": sight_dir.name, "disabled": False}
+        enabled_name = sight_dir.name[:-len(self.disabled_suffix)]
+        if not enabled_name:
+            raise ValueError("启用后的炮镜文件夹名称不合法")
+        target_dir = sight_dir.with_name(enabled_name)
+        if target_dir.exists():
+            raise FileExistsError(f"已存在启用状态文件夹: {target_dir.name}")
+        sight_dir.rename(target_dir)
+        self._clear_sights_cache()
+        return {"success": True, "name": target_dir.name, "disabled": False}
+
+    def delete_sight(self, name: str) -> dict[str, Any]:
+        sight_dir = self._resolve_sight_dir(name)
+        shutil.rmtree(sight_dir)
+        self._clear_sights_cache()
+        return {"success": True, "name": sight_dir.name}
+
+    def open_sight_folder(self, name: str) -> bool:
+        sight_dir = self._resolve_sight_dir(name)
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(str(sight_dir))
+            elif system == "Darwin":
+                subprocess.run(["open", str(sight_dir)], check=True)
+            else:
+                subprocess.run(["xdg-open", str(sight_dir)], check=True)
+            return True
+        except FileNotFoundError as e:
+            log.error(f"打开炮镜文件夹失败（找不到启动器）: {e}")
+            return False
+        except subprocess.CalledProcessError as e:
+            log.error(f"打开炮镜文件夹失败: {e}")
+            return False
+        except OSError as e:
+            log.error(f"打开炮镜文件夹失败: {e}")
+            return False
 
     def update_sight_cover_data(self, sight_name: str, data_url: str) -> bool:
         """
@@ -683,6 +761,196 @@ class SightsManager:
             file_list = "\n".join(f"  - {f}" for f in blocked_files[:10])
             raise SightsImportError(f"检测到不允许的文件类型:\n{file_list}")
 
+    def _looks_like_blk_sight(self, file_path: Path) -> bool:
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
+        except Exception:
+            return False
+        indicators = ("crosshair", "drawlines", "rangefinder", "thousandth", "matchexpclass", "fontsize")
+        return any(word in content for word in indicators)
+
+    def _backup_existing_file(self, target_path: Path) -> Path | None:
+        if not target_path.exists():
+            return None
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = target_path.with_name(f"{target_path.name}.bak_{stamp}")
+        index = 1
+        while backup_path.exists():
+            backup_path = target_path.with_name(f"{target_path.name}.bak_{stamp}_{index}")
+            index += 1
+        target_path.rename(backup_path)
+        return backup_path
+
+    def _normalize_sight_target_dir(self, target_dir: Any = None) -> str:
+        text = str(target_dir or "").strip()
+        if not text:
+            return "all_tanks"
+        if text in {".", ".."} or "/" in text or "\\" in text:
+            raise ValueError("炮镜目标目录只能是单层目录名")
+        if re.search(r'[<>:"|?*\x00-\x1f]', text):
+            raise ValueError('炮镜目标目录包含非法字符')
+        if Path(text).name != text:
+            raise ValueError("炮镜目标目录只能是单层目录名")
+        return text
+
+    def _looks_like_vehicle_sight_dir(self, name: str) -> bool:
+        lower = str(name or "").lower()
+        if lower == "all_tanks":
+            return True
+        vehicle_prefixes = ("germ_", "ussr_", "us_", "uk_", "jp_", "cn_", "fr_", "it_", "sw_", "il_")
+        return any(lower.startswith(prefix) for prefix in vehicle_prefixes)
+
+    def _merge_directory_contents(self, source_dir: Path, target_dir: Path) -> tuple[int, int]:
+        installed_count = 0
+        backup_count = 0
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for child in source_dir.iterdir():
+            target_path = target_dir / child.name
+            if child.is_dir():
+                child_installed, child_backups = self._merge_directory_contents(child, target_path)
+                installed_count += child_installed
+                backup_count += child_backups
+                continue
+            if not child.is_file():
+                continue
+            backup_path = self._backup_existing_file(target_path)
+            if backup_path:
+                backup_count += 1
+            shutil.move(str(child), str(target_path))
+            installed_count += 1
+        return installed_count, backup_count
+
+    def preview_sight_import(self, file_path: str | Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self._usersights_path or not self._usersights_path.exists():
+            return {"success": False, "error_code": "usersights_not_set", "msg": "请先设置有效的 UserSights 路径"}
+
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return {"success": False, "error_code": "file_not_found", "msg": "文件不存在"}
+
+        ext = source_path.suffix.lower()
+        if ext == ".blk":
+            return self._preview_blk_import(source_path, options=options)
+        if ext in self.supported_archive_extensions:
+            return {
+                "success": True,
+                "file_path": str(source_path),
+                "file_name": source_path.name,
+                "file_type": ext.lstrip("."),
+                "detected_type": "archive_package",
+                "target_root": str(self._usersights_path),
+                "install_entries": [],
+                "blk_count": 0,
+                "conflict_count": 0,
+                "warnings": ["压缩包将导入到 UserSights，安装后需要在游戏内选择并保存炮镜"],
+            }
+        return {"success": False, "error_code": "unsupported_file_type", "msg": "仅支持 .blk/.zip/.rar/.7z 炮镜文件"}
+
+    def _preview_blk_import(self, source_path: Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        target_dir = self._normalize_sight_target_dir((options or {}).get("target_dir"))
+        target_path = self._usersights_path / target_dir / source_path.name
+        if target_dir == "all_tanks":
+            warnings = ["将安装为全载具可选炮镜，安装后需要在游戏内选择并保存炮镜"]
+        else:
+            warnings = [f"将安装到特定载具目录 {target_dir}，安装后需要在该载具的 Sight Settings 中选择并保存"]
+        if not self._looks_like_blk_sight(source_path):
+            warnings.insert(0, "该文件内容不像标准炮镜配置，请确认文件是否正确")
+
+        return {
+            "success": True,
+            "file_path": str(source_path),
+            "file_name": source_path.name,
+            "file_type": "blk",
+            "detected_type": "single_blk",
+            "target_root": str(self._usersights_path),
+            "install_entries": [{
+                "source": source_path.name,
+                "target_dir": target_dir,
+                "target_name": source_path.name,
+                "target_path": str(target_path),
+                "exists": target_path.exists(),
+                "is_blk": True,
+            }],
+            "blk_count": 1,
+            "conflict_count": 1 if target_path.exists() else 0,
+            "warnings": warnings,
+        }
+
+    def import_sight_file(
+        self,
+        file_path: str | Path,
+        options: dict[str, Any] | None = None,
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        options = options or {}
+        conflict_strategy = str(options.get("conflict_strategy") or "backup")
+        if conflict_strategy != "backup":
+            raise ValueError("首版仅支持 backup 冲突策略")
+
+        source_path = Path(file_path)
+        ext = source_path.suffix.lower()
+        if ext == ".blk":
+            target_dir = self._normalize_sight_target_dir(options.get("target_dir"))
+            return self._import_blk_file(source_path, target_dir=target_dir, progress_callback=progress_callback)
+        if ext in self.supported_archive_extensions:
+            result = self.import_sights_zip(source_path, progress_callback=progress_callback, overwrite=False)
+            return {
+                "success": bool(result.get("ok")),
+                "installed_count": 0,
+                "backup_count": 0,
+                "target_root": str(self._usersights_path or ""),
+                "installed_dirs": [Path(str(result.get("target_dir") or "")).name] if result.get("target_dir") else [],
+                "message": "炮镜压缩包已导入",
+                **result,
+            }
+        raise ValueError("仅支持 .blk/.zip/.rar/.7z 炮镜文件")
+
+    def _import_blk_file(
+        self,
+        source_path: Path,
+        target_dir: str = "all_tanks",
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        if not self._usersights_path or not self._usersights_path.exists():
+            raise ValueError("请先设置有效的 UserSights 路径")
+        if not source_path.exists():
+            raise ValueError(f"炮镜文件不存在: {source_path}")
+        if source_path.suffix.lower() != ".blk":
+            raise ValueError("请选择有效的 .blk 炮镜文件")
+
+        target_dir_name = self._normalize_sight_target_dir(target_dir)
+        target_dir_path = self._usersights_path / target_dir_name
+        target_path = target_dir_path / source_path.name
+        if progress_callback:
+            progress_callback(5, f"准备安装炮镜: {source_path.name}")
+        try:
+            target_dir_path.mkdir(parents=True, exist_ok=True)
+            backup_path = self._backup_existing_file(target_path)
+            shutil.copy2(source_path, target_path)
+        except PermissionError as e:
+            raise SightsImportError(f"安装炮镜失败（权限不足）: {e}") from e
+        except OSError as e:
+            raise SightsImportError(f"安装炮镜失败: {e}") from e
+
+        self._clear_sights_cache()
+        if progress_callback:
+            progress_callback(100, "炮镜安装完成")
+
+        warnings = []
+        if not self._looks_like_blk_sight(source_path):
+            warnings.append("该文件内容不像标准炮镜配置，请确认文件是否正确")
+        return {
+            "success": True,
+            "installed_count": 1,
+            "backup_count": 1 if backup_path else 0,
+            "target_root": str(self._usersights_path),
+            "installed_dirs": [target_dir_name],
+            "target_path": str(target_path),
+            "backup_path": str(backup_path) if backup_path else "",
+            "warnings": warnings,
+            "message": f"已安装炮镜文件: {source_path.name}",
+        }
+
     def import_sights_zip(
         self,
         zip_path: str | Path,
@@ -812,7 +1080,28 @@ class SightsManager:
                 if p.name not in ("__MACOSX",) and p.name.lower() != "desktop.ini"
             ]
 
-            if len(top_level) == 1 and top_level[0].is_dir():
+            root_sight_dirs = [
+                p for p in top_level
+                if p.is_dir() and self._looks_like_vehicle_sight_dir(p.name)
+            ]
+            if root_sight_dirs and len(root_sight_dirs) == len(top_level):
+                installed_count = 0
+                backup_count = 0
+                installed_dirs = []
+                for source_dir in root_sight_dirs:
+                    target_item_dir = usersights_dir / source_dir.name
+                    item_count, item_backups = self._merge_directory_contents(source_dir, target_item_dir)
+                    installed_count += item_count
+                    backup_count += item_backups
+                    installed_dirs.append(source_dir.name)
+                target_dir = usersights_dir
+                log.info(
+                    "炮镜压缩包按 UserSights 目录结构合并: dirs=%s files=%s backups=%s",
+                    installed_dirs,
+                    installed_count,
+                    backup_count,
+                )
+            elif len(top_level) == 1 and top_level[0].is_dir():
                 inner_dir = top_level[0]
                 target_dir = usersights_dir / inner_dir.name
                 if target_dir.exists():
@@ -856,8 +1145,6 @@ class SightsManager:
         if progress_callback:
             progress_callback(100, "导入完成")
 
-        self._cache = None
-        self._cache_signature = None
-        self._index_cache.clear()
+        self._clear_sights_cache()
         log.info(f"炮镜导入成功: {target_dir}")
         return {"ok": True, "target_dir": str(target_dir)}

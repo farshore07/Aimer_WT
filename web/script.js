@@ -1237,16 +1237,143 @@ const app = {
         pywebview.api.import_skin_zip_dialog();
     },
 
-    importSightsZipDialog() {
+    async importSightsFileDialog() {
         if (!this.sightsPath) {
             app.showAlert("提示", "请先设置 UserSights 路径！");
             return;
         }
-        if (!window.pywebview?.api?.import_sights_zip_dialog) return;
-        pywebview.api.import_sights_zip_dialog();
+        const api = window.pywebview?.api;
+        if (!api?.select_sight_import_file || !api?.import_sight_file_from_path) {
+            this.showAlert("错误", "功能未就绪，请检查后端连接", "error");
+            return;
+        }
+        try {
+            const selected = await api.select_sight_import_file();
+            if (!selected || selected.cancelled) return;
+            if (!selected.success || !selected.path) {
+                this.showAlert("错误", selected?.msg || "选择炮镜文件失败", "error");
+                return;
+            }
+            const options = await this.buildSightImportOptions(selected.path);
+            if (!options) return;
+            const started = await api.import_sight_file_from_path(selected.path, options);
+            if (!started) {
+                this.showAlert("错误", "启动炮镜导入失败", "error");
+            }
+        } catch (error) {
+            this.showAlert("错误", error?.message || "导入炮镜文件失败", "error");
+        }
     },
 
-    async uploadArchiveFileForImport(file, targetType) {
+    importSightsZipDialog() {
+        return this.importSightsFileDialog();
+    },
+
+    async buildSightImportOptions(fileNameOrPath) {
+        const text = String(fileNameOrPath || "");
+        const lower = text.toLowerCase();
+        const options = { conflict_strategy: "backup" };
+        if (!lower.endsWith(".blk")) return options;
+        return this.showSightImportTargetDialog(fileNameOrPath);
+    },
+
+    showSightImportTargetDialog(fileNameOrPath) {
+        return new Promise((resolve) => {
+            const modalId = "modal-sight-import-target";
+            let modal = document.getElementById(modalId);
+            if (!modal) {
+                modal = document.createElement("div");
+                modal.id = modalId;
+                modal.className = "modal-overlay";
+                modal.innerHTML = `
+                    <div class="modal-content sight-import-target-modal">
+                        <h2>导入炮镜</h2>
+                        <p class="subtitle" id="sight-import-file-name"></p>
+                        <div class="sight-import-target-options">
+                            <label class="sight-import-target-option">
+                                <input type="radio" name="sight-import-target-mode" value="all" checked>
+                                <span>
+                                    <strong>应用到所有载具</strong>
+                                    <small>安装到 UserSights/all_tanks</small>
+                                </span>
+                            </label>
+                            <label class="sight-import-target-option">
+                                <input type="radio" name="sight-import-target-mode" value="vehicle">
+                                <span>
+                                    <strong>只给单独载具</strong>
+                                    <small>使用下面输入的载具目录名</small>
+                                </span>
+                            </label>
+                        </div>
+                        <input id="sight-import-target-input" class="input-v2 sight-import-target-input" placeholder="例如 ussr_t_72b">
+                        <div class="modal-actions">
+                            <button class="btn secondary" id="sight-import-target-cancel">取消</button>
+                            <button class="btn primary" id="sight-import-target-ok">
+                                <i class="ri-upload-cloud-2-line"></i> 开始导入
+                            </button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            }
+
+            const fileNameEl = modal.querySelector("#sight-import-file-name");
+            const inputEl = modal.querySelector("#sight-import-target-input");
+            const okBtn = modal.querySelector("#sight-import-target-ok");
+            const cancelBtn = modal.querySelector("#sight-import-target-cancel");
+            const modeInputs = Array.from(modal.querySelectorAll('input[name="sight-import-target-mode"]'));
+            let done = false;
+
+            const updateInputState = () => {
+                const mode = modeInputs.find(item => item.checked)?.value || "all";
+                inputEl.disabled = mode !== "vehicle";
+                if (mode !== "vehicle") inputEl.value = "";
+                if (mode === "vehicle") inputEl.focus();
+            };
+            const cleanup = () => {
+                okBtn.removeEventListener("click", onOk);
+                cancelBtn.removeEventListener("click", onCancel);
+                modal.removeEventListener("click", onOverlay);
+                modeInputs.forEach(input => input.removeEventListener("change", updateInputState));
+                this.closeModal(modalId);
+            };
+            const finish = (value) => {
+                if (done) return;
+                done = true;
+                cleanup();
+                resolve(value);
+            };
+            const onOk = () => {
+                const mode = modeInputs.find(item => item.checked)?.value || "all";
+                const targetDir = mode === "vehicle" ? String(inputEl.value || "").trim() : "all_tanks";
+                if (mode === "vehicle" && !targetDir) {
+                    this.showAlert("提示", "请输入载具目录名，例如 ussr_t_72b", "warn");
+                    inputEl.focus();
+                    return;
+                }
+                finish({ conflict_strategy: "backup", target_dir: targetDir || "all_tanks" });
+            };
+            const onCancel = () => finish(null);
+            const onOverlay = (event) => {
+                if (event.target === modal) finish(null);
+            };
+
+            if (fileNameEl) fileNameEl.textContent = `文件: ${String(fileNameOrPath || "").split(/[\\/]/).pop()}`;
+            modeInputs.forEach(input => {
+                input.checked = input.value === "all";
+                input.addEventListener("change", updateInputState);
+            });
+            if (inputEl) inputEl.value = "";
+            updateInputState();
+
+            okBtn.addEventListener("click", onOk);
+            cancelBtn.addEventListener("click", onCancel);
+            modal.addEventListener("click", onOverlay);
+            this.openModal(modalId);
+        });
+    },
+
+    async uploadArchiveFileForImport(file, targetType, importOptions) {
         const api = window.pywebview?.api;
         if (!api?.begin_browser_archive_import || !api?.append_browser_archive_chunk || !api?.finish_browser_archive_import) {
             this.showAlert("错误", "拖入导入接口未就绪", "error");
@@ -1275,7 +1402,7 @@ const app = {
                 MinimalistLoading.update(1, "正在准备拖入文件");
             }
 
-            const beginRes = await api.begin_browser_archive_import(targetType, fileName, fileSize);
+            const beginRes = await api.begin_browser_archive_import(targetType, fileName, fileSize, importOptions || {});
             if (!beginRes || !beginRes.success || !beginRes.session_id) {
                 this.showAlert("错误", beginRes?.msg || "创建拖入导入任务失败", "error");
                 if (window.MinimalistLoading) MinimalistLoading.hide();
@@ -1379,9 +1506,9 @@ const app = {
             target_selector: '#view-sights .res-main',
             icon: 'ri-crosshair-2-line',
             title: '拖入炮镜文件进行导入',
-            subtitle: '将 ZIP/RAR/7Z 压缩包放到此区域，AimerWT 会自动识别并导入到 UserSights',
-            allowed_exts: ['.zip', '.rar', '.7z'],
-            invalid_message: '当前炮镜库仅支持拖入 .zip/.rar/.7z 压缩包',
+            subtitle: '将 BLK/ZIP/RAR/7Z 炮镜文件放到此区域，AimerWT 会自动识别并导入到 UserSights',
+            allowed_exts: ['.blk', '.zip', '.rar', '.7z'],
+            invalid_message: '当前炮镜库仅支持拖入 .blk/.zip/.rar/.7z 炮镜文件',
             missing_path_message: '拖入通道未就绪，请稍后重试或使用“导入炮镜文件”按钮',
             backend_drop_fallback: false,
             active_check: () => {
@@ -1401,18 +1528,22 @@ const app = {
                     this.showAlert("提示", "请先设置 UserSights 路径！", "warn");
                     return;
                 }
-                await this.uploadArchiveFileForImport(file, 'sights');
+                const options = await this.buildSightImportOptions(file?.name || "");
+                if (!options) return;
+                await this.uploadArchiveFileForImport(file, 'sights', options);
             },
             on_drop: async (zipPath) => {
                 if (!this.sightsPath) {
                     this.showAlert("提示", "请先设置 UserSights 路径！", "warn");
                     return;
                 }
-                if (!window.pywebview?.api?.import_sights_zip_from_path) {
+                if (!window.pywebview?.api?.import_sight_file_from_path) {
                     this.showAlert("错误", "功能未就绪，请检查后端连接", "error");
                     return;
                 }
-                pywebview.api.import_sights_zip_from_path(zipPath);
+                const options = await this.buildSightImportOptions(zipPath);
+                if (!options) return;
+                pywebview.api.import_sight_file_from_path(zipPath, options);
             }
         });
         ResourceDragOverlay.bind('sights');
@@ -4553,6 +4684,110 @@ app.updateResourceSelectionSummary = function (resource_type, total_count) {
         select_all_el.checked = visible_count > 0 && selected_count === visible_count;
         select_all_el.indeterminate = selected_count > 0 && selected_count < visible_count;
     }
+
+    if (type === 'sights' && typeof this.updateSightsOpsButtons === 'function') {
+        this.updateSightsOpsButtons();
+    }
+};
+
+app.getSelectedSightCards = function () {
+    const listEl = document.getElementById('sights-list');
+    if (!listEl) return [];
+    return Array.from(listEl.querySelectorAll('.small-card.is-selected, .res-card.is-selected'));
+};
+
+app.getSelectedSightItems = function () {
+    return this.getSelectedSightCards().map(card => ({
+        name: decodeURIComponent(card.dataset.sightNameEncoded || ''),
+        disabled: card.dataset.disabled === '1',
+    })).filter(item => item.name);
+};
+
+app.updateSightsOpsButtons = function () {
+    const selected = this.getSelectedSightItems();
+    const hasSelection = selected.length > 0;
+    const allDisabled = hasSelection && selected.every(item => item.disabled);
+    const allEnabled = hasSelection && selected.every(item => !item.disabled);
+    const openBtn = document.getElementById('sights-op-open');
+    const enableBtn = document.getElementById('sights-op-enable');
+    const disableBtn = document.getElementById('sights-op-disable');
+    const deleteBtn = document.getElementById('sights-op-delete');
+    if (openBtn) openBtn.disabled = selected.length !== 1;
+    if (enableBtn) enableBtn.disabled = !allDisabled;
+    if (disableBtn) disableBtn.disabled = !allEnabled;
+    if (deleteBtn) deleteBtn.disabled = !hasSelection;
+};
+
+app.openSelectedSightFolder = async function () {
+    const selected = this.getSelectedSightItems();
+    if (selected.length !== 1) return;
+    if (!window.pywebview?.api?.open_sight_folder_by_name) {
+        this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
+        return;
+    }
+    const result = await pywebview.api.open_sight_folder_by_name(selected[0].name);
+    if (!result || !result.success) {
+        this.showAlert('错误', result?.msg || '打开炮镜文件夹失败', 'error');
+    }
+};
+
+app.enableSelectedSights = async function () {
+    const selected = this.getSelectedSightItems().filter(item => item.disabled);
+    if (!selected.length) return;
+    if (!window.pywebview?.api?.enable_sight) {
+        this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
+        return;
+    }
+    for (const item of selected) {
+        const result = await pywebview.api.enable_sight(item.name);
+        if (!result || !result.success) {
+            this.showAlert('错误', result?.msg || `启用失败: ${item.name}`, 'error');
+            return;
+        }
+    }
+    await this.refreshSights({ manual: true });
+};
+
+app.disableSelectedSights = async function () {
+    const selected = this.getSelectedSightItems().filter(item => !item.disabled);
+    if (!selected.length) return;
+    if (!window.pywebview?.api?.disable_sight) {
+        this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
+        return;
+    }
+    for (const item of selected) {
+        const result = await pywebview.api.disable_sight(item.name);
+        if (!result || !result.success) {
+            this.showAlert('错误', result?.msg || `禁用失败: ${item.name}`, 'error');
+            return;
+        }
+    }
+    await this.refreshSights({ manual: true });
+};
+
+app.deleteSelectedSights = async function () {
+    const selected = this.getSelectedSightItems();
+    if (!selected.length) return;
+    if (!window.pywebview?.api?.delete_sight) {
+        this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
+        return;
+    }
+    const names = selected.map(item => app._escapeHtml(item.name)).join('<br>');
+    const yes = await this.confirm(
+        '删除炮镜',
+        `确定要永久删除选中的 ${selected.length} 个炮镜文件夹吗？<br><br>${names}<br><br>此操作不可撤销。`,
+        true,
+        '确认删除'
+    );
+    if (!yes) return;
+    for (const item of selected) {
+        const result = await pywebview.api.delete_sight(item.name);
+        if (!result || !result.success) {
+            this.showAlert('错误', result?.msg || `删除失败: ${item.name}`, 'error');
+            return;
+        }
+    }
+    await this.refreshSights({ manual: true });
 };
 
 app.setResourceSelection = function (resource_type, selected) {
@@ -4947,7 +5182,9 @@ app._renderSightsView = function () {
     const placeholder = 'assets/card_image_small.png';
     listEl.innerHTML = items.map(item => {
         const folderName = String(item.name || "");
-        const displayName = String(item.display_name || folderName);
+        const isDisabled = !!item.disabled || folderName.endsWith(".AimerWT_BAN");
+        const enabledName = String(item.enabled_name || (isDisabled ? folderName.replace(/\.AimerWT_BAN$/, "") : folderName));
+        const displayName = String(item.display_name || enabledName);
         const cover = item.cover_url || placeholder;
         const isDefaultCover = !!item.cover_is_default;
         const safeDisplayName = app._escapeHtml(displayName);
@@ -4956,9 +5193,10 @@ app._renderSightsView = function () {
             : `${displayName}\n原始文件夹名: ${folderName}\n${item.path || ""}`);
         const encodedName = encodeURIComponent(folderName);
         return `
-            <div class="small-card" title="${cardTitle}">
+            <div class="small-card${isDisabled ? ' is-disabled-resource' : ''}" title="${cardTitle}" data-sight-name-encoded="${encodedName}" data-disabled="${isDisabled ? '1' : '0'}">
                 <div class="small-card-img-wrapper" style="position:relative;">
                     <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''}" src="${cover}" alt="">
+                    ${isDisabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
                     <div class="skin-edit-overlay">
                         <button class="btn-v2 icon-only small secondary skin-edit-btn"
                                 data-sight-name-encoded="${encodedName}"

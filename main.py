@@ -1743,7 +1743,7 @@ class AppApi:
         except Exception:
             pass
 
-    def begin_browser_archive_import(self, target_type, file_name, file_size):
+    def begin_browser_archive_import(self, target_type, file_name, file_size, import_options=None):
         target = str(target_type or "").strip().lower()
         if target not in {"skins", "sights"}:
             return {"success": False, "msg": "拖入目标不支持"}
@@ -1753,7 +1753,12 @@ class AppApi:
         if not safe_name:
             safe_name = "archive.zip"
         suffix = Path(safe_name).suffix.lower()
-        if suffix not in {".zip", ".rar", ".7z"}:
+        allowed_suffixes = {".zip", ".rar", ".7z"}
+        if target == "sights":
+            allowed_suffixes.add(".blk")
+        if suffix not in allowed_suffixes:
+            if target == "sights":
+                return {"success": False, "msg": "当前仅支持 .blk/.zip/.rar/.7z 炮镜文件"}
             return {"success": False, "msg": "当前仅支持 .zip/.rar/.7z 压缩包"}
 
         try:
@@ -1779,6 +1784,7 @@ class AppApi:
             self._browser_import_sessions[session_id] = {
                 "target": target,
                 "file_name": safe_name,
+                "import_options": import_options if isinstance(import_options, dict) else {},
                 "expected_size": size,
                 "received_size": 0,
                 "chunk_count": 0,
@@ -1874,7 +1880,11 @@ class AppApi:
         if target == "skins":
             started = self.import_skin_zip_from_path(str(temp_path))
         elif target == "sights":
-            started = self.import_sights_zip_from_path(str(temp_path))
+            import_options = session.get("import_options")
+            if not isinstance(import_options, dict):
+                import_options = {}
+            import_options.setdefault("conflict_strategy", "backup")
+            started = self.import_sight_file_from_path(str(temp_path), import_options)
         else:
             started = False
 
@@ -5352,6 +5362,34 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": str(e)}
 
+    def open_sight_folder_by_name(self, sight_name):
+        try:
+            ok = self._sights_mgr.open_sight_folder(sight_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.disable_sight(sight_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.enable_sight(sight_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.delete_sight(sight_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
     def import_sights_zip_dialog(self):
         # 打开文件选择对话框选择炮镜 ZIP 并触发导入流程。
         if self._is_busy:
@@ -5373,8 +5411,94 @@ class AppApi:
         self.import_sights_zip_from_path(zip_path)
         return True
 
+    def preview_sight_import(self, file_path, options=None):
+        # 返回炮镜导入预检信息，前端可据此展示确认内容。
+        try:
+            return self._sights_mgr.preview_sight_import(
+                file_path,
+                options=options if isinstance(options, dict) else {},
+            )
+        except Exception as e:
+            log.error(f"炮镜导入预检失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def select_sight_import_file(self):
+        # 选择单个炮镜文件，支持 .blk 与压缩包，实际安装由 import_sight_file_from_path 处理。
+        if not self._sights_mgr.get_usersights_path():
+            return {"success": False, "msg": "请先设置有效的 UserSights 路径"}
+        try:
+            file_types = ("Sight Files (*.blk;*.zip;*.rar;*.7z)", "All files (*.*)")
+            result = self._window.create_file_dialog(
+                webview.FileDialog.OPEN, allow_multiple=False, file_types=file_types
+            )
+            if not result or len(result) == 0:
+                return {"success": False, "cancelled": True}
+            return {"success": True, "path": result[0]}
+        except Exception as e:
+            log.error(f"选择炮镜文件失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def import_sight_file_from_path(self, file_path, options=None):
+        # 安装 .blk 或炮镜压缩包到 UserSights，并将进度同步到前端加载组件。
+        if self._is_busy:
+            log.warning("另一个任务正在进行中，请稍候...")
+            return False
+
+        if not self._sights_mgr.get_usersights_path():
+            log.warning("请先设置有效的 UserSights 路径")
+            return False
+
+        sight_path = str(file_path)
+        self._is_busy = True
+
+        if self._window:
+            msg_js = json.dumps(f"炮镜安装: {Path(sight_path).name}", ensure_ascii=False)
+            self._window.evaluate_js(
+                f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
+            )
+
+        def _run():
+            try:
+                result = self._sights_mgr.import_sight_file(
+                    sight_path,
+                    options=options if isinstance(options, dict) else {},
+                    progress_callback=self.update_loading_ui,
+                )
+                if self._window:
+                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights({manual:true})")
+                    msg = result.get("message") or "炮镜导入完成"
+                    msg_js = json.dumps(msg, ensure_ascii=False)
+                    self._window.evaluate_js(
+                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
+                    )
+            except FileExistsError as e:
+                log.warning(f"{e}")
+                if self._window:
+                    msg_js = json.dumps(str(e), ensure_ascii=False)
+                    self._window.evaluate_js(
+                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
+                    )
+            except Exception as e:
+                log.error(f"炮镜导入失败: {e}")
+                if self._window:
+                    msg_js = json.dumps(str(e) or "炮镜导入失败", ensure_ascii=False)
+                    self._window.evaluate_js(
+                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
+                    )
+            finally:
+                self._is_busy = False
+
+        t = threading.Thread(target=_run)
+        t.daemon = True
+        t.start()
+        return True
+
     def import_sights_zip_from_path(self, zip_path):
         # 导入指定路径的炮镜 ZIP 到 UserSights，并将进度同步到前端加载组件。
+        return self.import_sight_file_from_path(zip_path, {"conflict_strategy": "backup"})
+
+    def _legacy_import_sights_zip_from_path(self, zip_path):
+        # 旧 ZIP/RAR/7Z 导入流程保留给回退排查，常规入口使用 import_sight_file_from_path。
         if self._is_busy:
             log.warning("另一个任务正在进行中，请稍候...")
             return False
@@ -5932,12 +6056,12 @@ def main() -> int:
                 return "voice"
             if active_page == "page-camo":
                 if resource_view == "sights":
-                    api.import_sights_zip_from_path(archive_path)
+                    api.import_sight_file_from_path(archive_path, {"conflict_strategy": "backup"})
                     return "sights"
                 api.import_skin_zip_from_path(archive_path)
                 return "skins"
             if active_page == "page-sight":
-                api.import_sights_zip_from_path(archive_path)
+                api.import_sight_file_from_path(archive_path, {"conflict_strategy": "backup"})
                 return "sights"
             return ""
 
@@ -6002,7 +6126,13 @@ def main() -> int:
 
                     voice_archive_exts = (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".bank")
                     resource_archive_exts = (".zip", ".rar", ".7z")
-                    archive_exts = voice_archive_exts if active_page == "page-lib" else resource_archive_exts
+                    sight_file_exts = (".blk", ".zip", ".rar", ".7z")
+                    if active_page == "page-lib":
+                        archive_exts = voice_archive_exts
+                    elif active_page == "page-sight" or (active_page == "page-camo" and resource_view == "sights"):
+                        archive_exts = sight_file_exts
+                    else:
+                        archive_exts = resource_archive_exts
                     archive_files = [p for p in paths if p.lower().endswith(archive_exts)]
                     if not archive_files:
                         record_diagnostic_event(
