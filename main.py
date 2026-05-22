@@ -4508,9 +4508,10 @@ class AppApi:
             if not isinstance(item, dict):
                 continue
             folder_name = str(item.get("name") or "")
-            display_name = str(entries.get(folder_name) or "").strip()
+            enabled_name = str(item.get("enabled_name") or "").strip()
+            display_name = str(entries.get(folder_name) or entries.get(enabled_name) or "").strip()
             item["folder_name"] = folder_name
-            item["display_name"] = display_name or folder_name
+            item["display_name"] = display_name or enabled_name or folder_name
         return data
 
     def _move_resource_display_name(self, resource_type: str, old_name, new_name) -> None:
@@ -4521,6 +4522,14 @@ class AppApi:
             return
         if old_key in entries:
             entries[new_key] = entries.pop(old_key)
+            self._cfg_mgr.save_config()
+
+    def _delete_resource_display_name(self, resource_type: str, folder_name) -> None:
+        entries = self._resource_display_entries(resource_type, create=False)
+        folder_key = str(folder_name or "").strip()
+        if folder_key and folder_key in entries:
+            entries.pop(folder_key, None)
+            self._prune_resource_display_entries(resource_type)
             self._cfg_mgr.save_config()
 
     def _prune_resource_display_entries(self, resource_type: str) -> None:
@@ -4748,6 +4757,44 @@ class AppApi:
         try:
             self._skins_mgr.update_skin_cover_data(path, skin_name, data_url)
             return {"success": True}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def open_skin_folder_by_name(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            ok = self._skins_mgr.open_skin_folder(path, skin_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.disable_skin(path, skin_name)
+            if result.get("success"):
+                self._move_resource_display_name("skins", skin_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.enable_skin(path, skin_name)
+            if result.get("success"):
+                self._move_resource_display_name("skins", skin_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.delete_skin(path, skin_name)
+            if result.get("success"):
+                self._delete_resource_display_name("skins", skin_name)
+            return result
         except Exception as e:
             return {"success": False, "msg": str(e)}
 
@@ -5372,6 +5419,8 @@ class AppApi:
     def disable_sight(self, sight_name):
         try:
             result = self._sights_mgr.disable_sight(sight_name)
+            if result.get("success"):
+                self._move_resource_display_name("sights", sight_name, result.get("name"))
             return result
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -5379,6 +5428,8 @@ class AppApi:
     def enable_sight(self, sight_name):
         try:
             result = self._sights_mgr.enable_sight(sight_name)
+            if result.get("success"):
+                self._move_resource_display_name("sights", sight_name, result.get("name"))
             return result
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -5386,6 +5437,8 @@ class AppApi:
     def delete_sight(self, sight_name):
         try:
             result = self._sights_mgr.delete_sight(sight_name)
+            if result.get("success"):
+                self._delete_resource_display_name("sights", sight_name)
             return result
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -5695,6 +5748,40 @@ class AppApi:
             log.error(f"任务封面更新异常: {e}")
             return {"success": False, "msg": str(e)}
 
+    def open_task_folder_by_name(self, item_name):
+        try:
+            ok = self._task_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_task(self, item_name):
+        try:
+            result = self._task_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("tasks", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_task(self, item_name):
+        try:
+            result = self._task_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("tasks", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_task(self, item_name):
+        try:
+            result = self._task_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("tasks", item_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
     def get_models_list(self, opts=None):
         """扫描模型库目录，返回子文件夹列表供前端卡片展示。"""
         try:
@@ -5729,6 +5816,40 @@ class AppApi:
             log.error(f"模型封面更新异常: {e}")
             return {"success": False, "msg": str(e)}
 
+    def open_model_folder_by_name(self, item_name):
+        try:
+            ok = self._model_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_model(self, item_name):
+        try:
+            result = self._model_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("models", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_model(self, item_name):
+        try:
+            result = self._model_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("models", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_model(self, item_name):
+        try:
+            result = self._model_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("models", item_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
     def get_hangar_list(self, opts=None):
         """扫描机库目录，返回子文件夹列表供前端卡片展示。"""
         try:
@@ -5761,6 +5882,40 @@ class AppApi:
             return {"success": False, "msg": str(e)}
         except Exception as e:
             log.error(f"机库封面更新异常: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def open_hangar_folder_by_name(self, item_name):
+        try:
+            ok = self._hangar_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("hangar", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("hangar", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("hangar", item_name)
+            return result
+        except Exception as e:
             return {"success": False, "msg": str(e)}
 
 

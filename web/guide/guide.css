@@ -80,15 +80,25 @@
         top 0.32s cubic-bezier(.2, .8, .2, 1),
         width 0.32s cubic-bezier(.2, .8, .2, 1),
         height 0.32s cubic-bezier(.2, .8, .2, 1),
-        opacity 0.22s ease;
+        opacity 0.28s ease,
+        visibility 0s linear 0.28s;
     opacity: 0;
+    visibility: hidden;
     z-index: 1;
     pointer-events: none;
-    will-change: left, top, width, height, opacity;
+    will-change: left, top, width, height, opacity, visibility;
 }
 
 .author-guide-focus.active {
     opacity: 1;
+    visibility: visible;
+    transition:
+        left 0.32s cubic-bezier(.2, .8, .2, 1),
+        top 0.32s cubic-bezier(.2, .8, .2, 1),
+        width 0.32s cubic-bezier(.2, .8, .2, 1),
+        height 0.32s cubic-bezier(.2, .8, .2, 1),
+        opacity 0.28s ease,
+        visibility 0s linear 0s;
     animation: author-guide-focus-glow 2s ease-in-out infinite;
 }
 

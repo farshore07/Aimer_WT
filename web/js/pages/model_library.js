@@ -112,7 +112,9 @@ const ModelLibrary = {
             const chunk = items.slice(current_index, current_index + CHUNK_SIZE);
             const html = chunk.map(it => {
                 const folder_name = String(it.name || '');
-                const display_name = String(it.display_name || folder_name);
+                const is_disabled = !!it.disabled || folder_name.endsWith(".AimerWT_BAN");
+                const enabled_name = String(it.enabled_name || (is_disabled ? folder_name.replace(/\.AimerWT_BAN$/, "") : folder_name));
+                const display_name = String(it.display_name || enabled_name);
                 const cover = it.cover_url || placeholder;
                 const is_default = !!it.cover_is_default;
                 const size_text = this._format_bytes(it.size_bytes || 0);
@@ -123,10 +125,11 @@ const ModelLibrary = {
                     : `${display_name}\n原始文件夹名: ${folder_name}\n${it.path || ''}`;
 
                 return `
-                    <div class="small-card animate-in" title="${this._escape_html(title_text)}" data-item-name="${safe_name}">
+                    <div class="small-card animate-in${is_disabled ? ' is-disabled-resource' : ''}" title="${this._escape_html(title_text)}" data-item-name="${safe_name}" data-resource-name-encoded="${encodeURIComponent(folder_name)}" data-disabled="${is_disabled ? '1' : '0'}">
                         <div class="small-card-img-wrapper" style="position:relative;">
                              <img class="small-card-img${is_default ? ' is-default-cover' : ''} item-img-node"
                                   src="${cover}" loading="lazy" alt="">
+                             ${is_disabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn" type="button">
                                      <i class="ri-edit-line"></i>
@@ -148,6 +151,8 @@ const ModelLibrary = {
 
             if (current_index < items.length) {
                 requestAnimationFrame(render_chunk);
+            } else if (window.app && typeof app.updateResourceSelectionSummary === 'function') {
+                app.updateResourceSelectionSummary('models', items.length);
             }
         };
 

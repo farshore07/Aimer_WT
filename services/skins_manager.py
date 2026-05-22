@@ -18,6 +18,7 @@
 """
 import base64
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -56,6 +57,7 @@ class SkinsManager:
     """
     supported_archive_extensions = (".zip", ".rar", ".7z")
     allowed_skin_extensions = {".dds", ".blk", ".tga"}
+    disabled_suffix = ".AimerWT_BAN"
     
     def __init__(self, cache_dir: str | Path | None = None):
         """
@@ -127,6 +129,9 @@ class SkinsManager:
                 signature = self._index_cache.build_item_signature(entry, cover_path)
                 item = None if skip_covers else self._index_cache.get_cached_item(cached_records, entry.name, signature)
 
+                is_disabled = entry.name.endswith(self.disabled_suffix)
+                enabled_name = entry.name[:-len(self.disabled_suffix)] if is_disabled else entry.name
+
                 if item is None:
                     size_bytes, file_count = self._get_dir_size_and_count_fast(entry)
                     cover_url = ""
@@ -141,6 +146,8 @@ class SkinsManager:
 
                     item = {
                         "name": entry.name,
+                        "enabled_name": enabled_name,
+                        "disabled": is_disabled,
                         "path": str(entry),
                         "size_bytes": size_bytes,
                         "file_count": file_count,
@@ -150,6 +157,8 @@ class SkinsManager:
                     }
                 else:
                     item["name"] = entry.name
+                    item["enabled_name"] = enabled_name
+                    item["disabled"] = is_disabled
                     item["path"] = str(entry)
                     item["preview_path"] = str(preview_path) if preview_path else ""
 
@@ -378,6 +387,61 @@ class SkinsManager:
             raise OSError(f"重命名失败（权限不足）: {e}")
         except OSError as e:
             raise OSError(f"重命名失败: {e}")
+
+    def _resolve_skin_dir(self, game_path: str | Path, skin_name: str) -> Path:
+        name = str(skin_name or "").strip()
+        if not name or name != Path(name).name:
+            raise ValueError("涂装文件夹名称不合法")
+        skin_dir = self.get_userskins_dir(game_path) / name
+        if not skin_dir.exists() or not skin_dir.is_dir():
+            raise FileNotFoundError(f"涂装文件夹不存在: {name}")
+        return skin_dir
+
+    def open_skin_folder(self, game_path: str | Path, skin_name: str) -> bool:
+        """打开指定涂装文件夹。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(str(skin_dir))
+        elif system == "Darwin":
+            subprocess.run(["open", str(skin_dir)], check=True)
+        else:
+            subprocess.run(["xdg-open", str(skin_dir)], check=True)
+        return True
+
+    def disable_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """将涂装文件夹改名为禁用状态。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        if skin_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": skin_dir.name, "disabled": True}
+        target_dir = skin_dir.with_name(f"{skin_dir.name}{self.disabled_suffix}")
+        if target_dir.exists():
+            raise FileExistsError(f"已存在禁用状态文件夹: {target_dir.name}")
+        skin_dir.rename(target_dir)
+        self._clear_cache()
+        return {"success": True, "name": target_dir.name, "disabled": True}
+
+    def enable_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """将涂装文件夹恢复为启用状态。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        if not skin_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": skin_dir.name, "disabled": False}
+        enabled_name = skin_dir.name[:-len(self.disabled_suffix)]
+        if not enabled_name:
+            raise ValueError("启用后的涂装文件夹名称不合法")
+        target_dir = skin_dir.with_name(enabled_name)
+        if target_dir.exists():
+            raise FileExistsError(f"已存在启用状态文件夹: {target_dir.name}")
+        skin_dir.rename(target_dir)
+        self._clear_cache()
+        return {"success": True, "name": target_dir.name, "disabled": False}
+
+    def delete_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """删除指定涂装文件夹。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        shutil.rmtree(skin_dir)
+        self._clear_cache()
+        return {"success": True, "name": skin_dir.name}
 
     def update_skin_cover(self, game_path: str | Path, skin_name: str, img_path: str) -> bool:
         """

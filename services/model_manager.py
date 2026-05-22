@@ -16,6 +16,7 @@
 import base64
 import os
 import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -45,6 +46,7 @@ class ModelManager:
         root_dir: 应用数据根目录
         model_library_dir: 模型库目录
     """
+    disabled_suffix = ".AimerWT_BAN"
 
     def __init__(self, model_library_dir: str | None = None, cache_dir: str | Path | None = None):
         """初始化 ModelManager。"""
@@ -131,6 +133,59 @@ class ModelManager:
         """打开模型库目录。"""
         self._open_folder_cross_platform(self.model_library_dir)
 
+    def _clear_items_cache(self) -> None:
+        self._items_cache = None
+        self._items_cache_signature = None
+        self._index_cache.clear()
+
+    def _resolve_item_dir(self, item_name: str) -> Path:
+        name = str(item_name or "").strip()
+        if not name or name != Path(name).name:
+            raise ValueError("模型文件夹名称不合法")
+        item_dir = self.model_library_dir / name
+        if not item_dir.exists() or not item_dir.is_dir():
+            raise FileNotFoundError(f"模型文件夹不存在: {name}")
+        return item_dir
+
+    def open_item_folder(self, item_name: str) -> bool:
+        """打开指定模型文件夹。"""
+        self._open_folder_cross_platform(self._resolve_item_dir(item_name))
+        return True
+
+    def disable_item(self, item_name: str) -> dict:
+        """将模型文件夹改名为禁用状态。"""
+        item_dir = self._resolve_item_dir(item_name)
+        if item_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": item_dir.name, "disabled": True}
+        target_dir = item_dir.with_name(f"{item_dir.name}{self.disabled_suffix}")
+        if target_dir.exists():
+            raise FileExistsError(f"已存在禁用状态文件夹: {target_dir.name}")
+        item_dir.rename(target_dir)
+        self._clear_items_cache()
+        return {"success": True, "name": target_dir.name, "disabled": True}
+
+    def enable_item(self, item_name: str) -> dict:
+        """将模型文件夹恢复为启用状态。"""
+        item_dir = self._resolve_item_dir(item_name)
+        if not item_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": item_dir.name, "disabled": False}
+        enabled_name = item_dir.name[:-len(self.disabled_suffix)]
+        if not enabled_name:
+            raise ValueError("启用后的模型文件夹名称不合法")
+        target_dir = item_dir.with_name(enabled_name)
+        if target_dir.exists():
+            raise FileExistsError(f"已存在启用状态文件夹: {target_dir.name}")
+        item_dir.rename(target_dir)
+        self._clear_items_cache()
+        return {"success": True, "name": target_dir.name, "disabled": False}
+
+    def delete_item(self, item_name: str) -> dict:
+        """删除指定模型文件夹。"""
+        item_dir = self._resolve_item_dir(item_name)
+        shutil.rmtree(item_dir)
+        self._clear_items_cache()
+        return {"success": True, "name": item_dir.name}
+
     def get_model_library_path(self) -> str:
         """获取模型库路径。"""
         return str(self.model_library_dir)
@@ -168,10 +223,15 @@ class ModelManager:
                 signature = self._index_cache.build_item_signature(entry, cover_path)
                 item = self._index_cache.get_cached_item(cached_records, entry.name, signature)
 
+                is_disabled = entry.name.endswith(self.disabled_suffix)
+                enabled_name = entry.name[:-len(self.disabled_suffix)] if is_disabled else entry.name
+
                 if item is None:
                     cover_url = self._to_data_url(cover_path) if cover_path else ""
                     item = {
                         "name": entry.name,
+                        "enabled_name": enabled_name,
+                        "disabled": is_disabled,
                         "path": str(entry),
                         "size_bytes": self._get_dir_size_fast(entry),
                         "cover_url": cover_url,
@@ -180,6 +240,8 @@ class ModelManager:
                     }
                 else:
                     item["name"] = entry.name
+                    item["enabled_name"] = enabled_name
+                    item["disabled"] = is_disabled
                     item["path"] = str(entry)
 
                 items.append(item)
@@ -225,9 +287,7 @@ class ModelManager:
 
         try:
             old_path.rename(new_path)
-            self._items_cache = None
-            self._items_cache_signature = None
-            self._index_cache.clear()
+            self._clear_items_cache()
             log.info(f"模型重命名成功: {old_name} -> {new_name}")
             return True
         except OSError as e:
@@ -264,9 +324,7 @@ class ModelManager:
         cover_path = item_dir / COVER_FILENAME
         try:
             cover_path.write_bytes(img_bytes)
-            self._items_cache = None
-            self._items_cache_signature = None
-            self._index_cache.clear()
+            self._clear_items_cache()
             log.info(f"模型封面已更新: {item_name}")
             return True
         except OSError as e:

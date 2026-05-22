@@ -672,7 +672,9 @@ const app = {
             const chunk = items.slice(currentIndex, currentIndex + CHUNK_SIZE);
             const html = chunk.map(it => {
                 const folderName = String(it.name || "");
-                const displayName = String(it.display_name || folderName);
+                const isDisabled = folderName.endsWith(".AimerWT_BAN");
+                const enabledName = isDisabled ? folderName.replace(/\.AimerWT_BAN$/, "") : folderName;
+                const displayName = String(it.display_name || enabledName);
                 const cover = it.cover_url || placeholder;
                 const isDefaultCover = !!it.cover_is_default || !it.cover_url || !it.preview_path;
                 const sizeText = app._formatBytes(it.size_bytes || 0);
@@ -686,10 +688,11 @@ const app = {
                 );
 
                 return `
-                    <div class="small-card animate-in" title="${cardTitle}" data-skin-name="${safeName}">
+                    <div class="small-card animate-in${isDisabled ? ' is-disabled-resource' : ''}" title="${cardTitle}" data-skin-name="${safeName}" data-resource-name-encoded="${encodedName}" data-disabled="${isDisabled ? '1' : '0'}">
                         <div class="small-card-img-wrapper" style="position:relative;">
                              <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''} skin-img-node"
                                   src="${cover}" loading="lazy" alt="">
+                             ${isDisabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn"
                                          data-skin-name-encoded="${encodedName}"
@@ -700,7 +703,7 @@ const app = {
                         </div>
                         <div class="small-card-body">
                             <div class="skin-card-footer">
-                                <div class="skin-card-name" title="${safeDisplayName}">${safeDisplayName}</div>
+                                <div class="skin-card-name" title="${safeDisplayName}">${safeDisplayName || app._escapeHtml(enabledName)}</div>
                                 <div class="skin-card-size">${sizeText}</div>
                             </div>
                         </div>
@@ -4665,6 +4668,55 @@ app.switchResourceViewMode = function (resource_type, mode) {
     }
 };
 
+app.resource_ops_config = {
+    skins: {
+        label: '涂装',
+        open_api: 'open_skin_folder_by_name',
+        enable_api: 'enable_skin',
+        disable_api: 'disable_skin',
+        delete_api: 'delete_skin',
+        refresh: () => app.refreshSkins({ manual: true })
+    },
+    sights: {
+        label: '炮镜',
+        open_api: 'open_sight_folder_by_name',
+        enable_api: 'enable_sight',
+        disable_api: 'disable_sight',
+        delete_api: 'delete_sight',
+        refresh: () => app.refreshSights({ manual: true })
+    },
+    tasks: {
+        label: '任务',
+        open_api: 'open_task_folder_by_name',
+        enable_api: 'enable_task',
+        disable_api: 'disable_task',
+        delete_api: 'delete_task',
+        refresh: () => {
+            if (typeof TaskLibrary !== 'undefined') return TaskLibrary.refresh_list({ manual: true });
+        }
+    },
+    models: {
+        label: '模型',
+        open_api: 'open_model_folder_by_name',
+        enable_api: 'enable_model',
+        disable_api: 'disable_model',
+        delete_api: 'delete_model',
+        refresh: () => {
+            if (typeof ModelLibrary !== 'undefined') return ModelLibrary.refresh_list({ manual: true });
+        }
+    },
+    hangar: {
+        label: '机库',
+        open_api: 'open_hangar_folder_by_name',
+        enable_api: 'enable_hangar',
+        disable_api: 'disable_hangar',
+        delete_api: 'delete_hangar',
+        refresh: () => {
+            if (typeof Hangar !== 'undefined') return Hangar.refresh_list({ manual: true });
+        }
+    }
+};
+
 app.updateResourceSelectionSummary = function (resource_type, total_count) {
     const type = String(resource_type || '').trim();
     if (!type) return;
@@ -4685,109 +4737,160 @@ app.updateResourceSelectionSummary = function (resource_type, total_count) {
         select_all_el.indeterminate = selected_count > 0 && selected_count < visible_count;
     }
 
-    if (type === 'sights' && typeof this.updateSightsOpsButtons === 'function') {
-        this.updateSightsOpsButtons();
+    if (typeof this.update_resource_ops_buttons === 'function') {
+        this.update_resource_ops_buttons(type);
     }
 };
 
-app.getSelectedSightCards = function () {
-    const listEl = document.getElementById('sights-list');
-    if (!listEl) return [];
-    return Array.from(listEl.querySelectorAll('.small-card.is-selected, .res-card.is-selected'));
+app.get_selected_resource_cards = function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const list_el = document.getElementById(`${type}-list`);
+    if (!list_el) return [];
+    return Array.from(list_el.querySelectorAll('.small-card.is-selected, .res-card.is-selected'));
 };
 
-app.getSelectedSightItems = function () {
-    return this.getSelectedSightCards().map(card => ({
-        name: decodeURIComponent(card.dataset.sightNameEncoded || ''),
-        disabled: card.dataset.disabled === '1',
-    })).filter(item => item.name);
+app.get_selected_resource_items = function (resource_type) {
+    return this.get_selected_resource_cards(resource_type).map(card => {
+        const encoded_name = card.dataset.resourceNameEncoded
+            || card.dataset.sightNameEncoded
+            || card.dataset.skinNameEncoded
+            || '';
+        const name = encoded_name
+            ? decodeURIComponent(encoded_name)
+            : String(card.dataset.itemName || card.dataset.skinName || '').trim();
+        return {
+            name,
+            disabled: card.dataset.disabled === '1' || name.endsWith('.AimerWT_BAN'),
+        };
+    }).filter(item => item.name);
 };
 
-app.updateSightsOpsButtons = function () {
-    const selected = this.getSelectedSightItems();
-    const hasSelection = selected.length > 0;
-    const allDisabled = hasSelection && selected.every(item => item.disabled);
-    const allEnabled = hasSelection && selected.every(item => !item.disabled);
-    const openBtn = document.getElementById('sights-op-open');
-    const enableBtn = document.getElementById('sights-op-enable');
-    const disableBtn = document.getElementById('sights-op-disable');
-    const deleteBtn = document.getElementById('sights-op-delete');
-    if (openBtn) openBtn.disabled = selected.length !== 1;
-    if (enableBtn) enableBtn.disabled = !allDisabled;
-    if (disableBtn) disableBtn.disabled = !allEnabled;
-    if (deleteBtn) deleteBtn.disabled = !hasSelection;
+app.update_resource_ops_buttons = function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const selected = this.get_selected_resource_items(type);
+    const has_selection = selected.length > 0;
+    const all_disabled = has_selection && selected.every(item => item.disabled);
+    const all_enabled = has_selection && selected.every(item => !item.disabled);
+    const open_btn = document.getElementById(`${type}-op-open`);
+    const enable_btn = document.getElementById(`${type}-op-enable`);
+    const disable_btn = document.getElementById(`${type}-op-disable`);
+    const delete_btn = document.getElementById(`${type}-op-delete`);
+    if (open_btn) open_btn.disabled = selected.length !== 1;
+    if (enable_btn) enable_btn.disabled = !all_disabled;
+    if (disable_btn) disable_btn.disabled = !all_enabled;
+    if (delete_btn) delete_btn.disabled = !has_selection;
 };
 
-app.openSelectedSightFolder = async function () {
-    const selected = this.getSelectedSightItems();
+app.open_selected_resource_folder = async function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const config = this.resource_ops_config[type];
+    const selected = this.get_selected_resource_items(type);
     if (selected.length !== 1) return;
-    if (!window.pywebview?.api?.open_sight_folder_by_name) {
+    const api_fn = config && window.pywebview?.api?.[config.open_api];
+    if (!api_fn) {
         this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
         return;
     }
-    const result = await pywebview.api.open_sight_folder_by_name(selected[0].name);
+    const result = await window.pywebview.api[config.open_api](selected[0].name);
     if (!result || !result.success) {
-        this.showAlert('错误', result?.msg || '打开炮镜文件夹失败', 'error');
+        this.showAlert('错误', result?.msg || `打开${config.label}文件夹失败`, 'error');
     }
 };
 
-app.enableSelectedSights = async function () {
-    const selected = this.getSelectedSightItems().filter(item => item.disabled);
+app.enable_selected_resources = async function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const config = this.resource_ops_config[type];
+    const selected = this.get_selected_resource_items(type).filter(item => item.disabled);
     if (!selected.length) return;
-    if (!window.pywebview?.api?.enable_sight) {
+    const api_fn = config && window.pywebview?.api?.[config.enable_api];
+    if (!api_fn) {
         this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
         return;
     }
     for (const item of selected) {
-        const result = await pywebview.api.enable_sight(item.name);
+        const result = await window.pywebview.api[config.enable_api](item.name);
         if (!result || !result.success) {
             this.showAlert('错误', result?.msg || `启用失败: ${item.name}`, 'error');
             return;
         }
     }
-    await this.refreshSights({ manual: true });
+    await config.refresh();
 };
 
-app.disableSelectedSights = async function () {
-    const selected = this.getSelectedSightItems().filter(item => !item.disabled);
+app.disable_selected_resources = async function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const config = this.resource_ops_config[type];
+    const selected = this.get_selected_resource_items(type).filter(item => !item.disabled);
     if (!selected.length) return;
-    if (!window.pywebview?.api?.disable_sight) {
+    const api_fn = config && window.pywebview?.api?.[config.disable_api];
+    if (!api_fn) {
         this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
         return;
     }
     for (const item of selected) {
-        const result = await pywebview.api.disable_sight(item.name);
+        const result = await window.pywebview.api[config.disable_api](item.name);
         if (!result || !result.success) {
             this.showAlert('错误', result?.msg || `禁用失败: ${item.name}`, 'error');
             return;
         }
     }
-    await this.refreshSights({ manual: true });
+    await config.refresh();
 };
 
-app.deleteSelectedSights = async function () {
-    const selected = this.getSelectedSightItems();
+app.delete_selected_resources = async function (resource_type) {
+    const type = String(resource_type || '').trim();
+    const config = this.resource_ops_config[type];
+    const selected = this.get_selected_resource_items(type);
     if (!selected.length) return;
-    if (!window.pywebview?.api?.delete_sight) {
+    const api_fn = config && window.pywebview?.api?.[config.delete_api];
+    if (!api_fn) {
         this.showAlert('错误', '功能未就绪，请检查后端连接', 'error');
         return;
     }
     const names = selected.map(item => app._escapeHtml(item.name)).join('<br>');
     const yes = await this.confirm(
-        '删除炮镜',
-        `确定要永久删除选中的 ${selected.length} 个炮镜文件夹吗？<br><br>${names}<br><br>此操作不可撤销。`,
+        `删除${config.label}`,
+        `确定要永久删除选中的 ${selected.length} 个${config.label}文件夹吗？<br><br>${names}<br><br>此操作不可撤销。`,
         true,
         '确认删除'
     );
     if (!yes) return;
     for (const item of selected) {
-        const result = await pywebview.api.delete_sight(item.name);
+        const result = await window.pywebview.api[config.delete_api](item.name);
         if (!result || !result.success) {
             this.showAlert('错误', result?.msg || `删除失败: ${item.name}`, 'error');
             return;
         }
     }
-    await this.refreshSights({ manual: true });
+    await config.refresh();
+};
+
+app.getSelectedSightCards = function () {
+    return this.get_selected_resource_cards('sights');
+};
+
+app.getSelectedSightItems = function () {
+    return this.get_selected_resource_items('sights');
+};
+
+app.updateSightsOpsButtons = function () {
+    this.update_resource_ops_buttons('sights');
+};
+
+app.openSelectedSightFolder = function () {
+    return this.open_selected_resource_folder('sights');
+};
+
+app.enableSelectedSights = function () {
+    return this.enable_selected_resources('sights');
+};
+
+app.disableSelectedSights = function () {
+    return this.disable_selected_resources('sights');
+};
+
+app.deleteSelectedSights = function () {
+    return this.delete_selected_resources('sights');
 };
 
 app.setResourceSelection = function (resource_type, selected) {
@@ -4823,6 +4926,7 @@ app.initResourceSelectionControls = function () {
                 this.updateResourceSelectionSummary(resource_type);
             });
         }
+        this.update_resource_ops_buttons(resource_type);
     });
 };
 

@@ -3,7 +3,7 @@
     const AUTO_START_DELAY_MS = 1100;
     const STEP_WAIT_MAX_MS = 1400;
     const STEP_STABLE_DELTA = 0.9;
-    const STEP_STABLE_FRAMES = 2;
+    const STEP_STABLE_FRAMES = 5;
     const STEP_RETRY_MAX = 14;
     const CARD_FADE_OUT_MS = 200;
     const CARD_FADE_IN_MS = 300;
@@ -178,6 +178,11 @@
             detail: "启动设置改动后会自动保存。",
             beforeShow(app) {
                 if (app && typeof app.switchTab === "function") app.switchTab("settings");
+                window.requestAnimationFrame(() => {
+                    window.requestAnimationFrame(() => {
+                        scrollElementIntoPageView("#startup-card", { block: "center", gap: 28 });
+                    });
+                });
             }
         },
         {
@@ -187,6 +192,11 @@
             detail: "主题切换后即时生效，无需重启。",
             beforeShow(app) {
                 if (app && typeof app.switchTab === "function") app.switchTab("settings");
+                window.requestAnimationFrame(() => {
+                    window.requestAnimationFrame(() => {
+                        scrollElementIntoPageView("#theme-card", { block: "center", gap: 28 });
+                    });
+                });
             }
         },
         {
@@ -375,7 +385,7 @@
         const page = target.closest(".page");
         if (!page) {
             try {
-                target.scrollIntoView({ block: options.block || "center", inline: "nearest", behavior: "auto" });
+                target.scrollIntoView({ block: options.block || "center", inline: "nearest", behavior: "smooth" });
             } catch (_e) {
             }
             return;
@@ -397,7 +407,16 @@
         }
 
         const maxScroll = Math.max(0, page.scrollHeight - page.clientHeight);
-        page.scrollTop = Math.min(Math.max(0, nextTop), maxScroll);
+        const finalTop = Math.min(Math.max(0, nextTop), maxScroll);
+
+        try {
+            page.scrollTo({
+                top: finalTop,
+                behavior: "smooth"
+            });
+        } catch (_e) {
+            page.scrollTop = finalTop;
+        }
     }
 
     function clearHighlight() {
@@ -729,7 +748,6 @@
             if (!state.active || token !== state.renderToken) return;
             clearHighlight();
             if (state.focus) {
-                state.focus.style.display = "none";
                 state.focus.classList.remove("active");
             }
             // 无目标时遮罩不镂空
@@ -765,11 +783,37 @@
 
             // focus 发光边框定位
             const pad = FOCUS_PAD;
-            state.focus.style.display = "block";
-            state.focus.style.left = `${rect.left - pad}px`;
-            state.focus.style.top = `${rect.top - pad}px`;
-            state.focus.style.width = `${rect.width + pad * 2}px`;
-            state.focus.style.height = `${rect.height + pad * 2}px`;
+            let focusLeft = rect.left - pad;
+            let focusTop = rect.top - pad;
+            let focusWidth = rect.width + pad * 2;
+            let focusHeight = rect.height + pad * 2;
+
+            // 视口边界防裁剪保护（左侧/顶部收紧并保留安全间距）
+            const viewW = window.innerWidth;
+            const viewH = window.innerHeight;
+            const safeMargin = 5; // 左侧与视口边界保留 5px 优雅间隙
+
+            if (focusLeft < safeMargin) {
+                const delta = safeMargin - focusLeft;
+                focusLeft = safeMargin;
+                focusWidth = Math.max(0, focusWidth - delta);
+            }
+            if (focusTop < safeMargin) {
+                const delta = safeMargin - focusTop;
+                focusTop = safeMargin;
+                focusHeight = Math.max(0, focusHeight - delta);
+            }
+            if (focusLeft + focusWidth > viewW - safeMargin) {
+                focusWidth = Math.max(0, viewW - safeMargin - focusLeft);
+            }
+            if (focusTop + focusHeight > viewH - safeMargin) {
+                focusHeight = Math.max(0, viewH - safeMargin - focusTop);
+            }
+
+            state.focus.style.left = `${focusLeft}px`;
+            state.focus.style.top = `${focusTop}px`;
+            state.focus.style.width = `${focusWidth}px`;
+            state.focus.style.height = `${focusHeight}px`;
             state.focus.style.borderRadius = `${metrics.focusRadius}px`;
             state.focus.classList.add("active");
 
@@ -822,6 +866,12 @@
         const step = STEPS[state.index];
         if (!step) return stop({ markCompleted: true });
         console.info(`[Guide] render step ${state.index + 1}/${STEPS.length}: ${step.title || step.target || "unknown"}`);
+
+        // 切换步骤时立即清理旧的遮罩镂空和高光，消除视觉残留
+        if (state.focus) state.focus.classList.remove("active");
+        setBackdropClip(null);
+        clearHighlight();
+
         if (typeof step.beforeShow === "function") {
             try {
                 step.beforeShow(state.app);
@@ -912,7 +962,12 @@
             window.requestAnimationFrame(tick);
         };
 
-        window.requestAnimationFrame(tick);
+        // 避开 Tab 切换和滚动刚启动时的剧烈抖动与重绘漂移期，延迟 220ms 再开始计算高光渲染与稳定检测
+        window.setTimeout(() => {
+            if (state.active && token === state.renderToken) {
+                window.requestAnimationFrame(tick);
+            }
+        }, 220);
     }
 
     /* ---- start / stop ---- */
@@ -936,7 +991,6 @@
         setBackdropClip(null);
         if (state.overlay) state.overlay.classList.remove("intro-step");
         if (state.focus) {
-            state.focus.style.display = "none";
             state.focus.classList.remove("active");
         }
         if (state.overlay) state.overlay.classList.remove("active");
