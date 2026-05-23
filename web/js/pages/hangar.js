@@ -36,6 +36,12 @@ const Hangar = {
         this._bind_card_events();
     },
 
+    _t(key, params) {
+        if (window.app && typeof app.t === 'function') return app.t(key, params);
+        if (window.I18N && typeof I18N.t === 'function') return I18N.t(key, params);
+        return key;
+    },
+
     show() {
         const view = document.getElementById(this.view_id);
         if (view) view.classList.add('active');
@@ -65,7 +71,7 @@ const Hangar = {
             refresh_btn.disabled = true;
             refresh_btn.classList.add('is-loading');
         }
-        count_el.textContent = '刷新中...';
+        count_el.textContent = this._t('tools.count_refreshing');
 
         try {
             if (!window.pywebview?.api?.get_hangar_list) {
@@ -122,6 +128,7 @@ const Hangar = {
                 const size_text = this._format_bytes(it.size_bytes || 0);
                 const safe_name = this._escape_html(folder_name);
                 const safe_display_name = this._escape_html(display_name);
+                const disabled_label = this._escape_html(this._t('resource.status_disabled'));
                 const title_text = display_name === folder_name
                     ? String(it.path || '')
                     : `${display_name}\n原始文件夹名: ${folder_name}\n${it.path || ''}`;
@@ -131,7 +138,7 @@ const Hangar = {
                         <div class="small-card-img-wrapper" style="position:relative;">
                              <img class="small-card-img${is_default ? ' is-default-cover' : ''} item-img-node"
                                   src="${cover}" loading="lazy" alt="">
-                             ${is_disabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
+                             ${is_disabled ? `<div class="resource-status-badge is-disabled">${disabled_label}</div>` : ''}
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn" type="button">
                                      <i class="ri-edit-line"></i>
@@ -242,7 +249,7 @@ const Hangar = {
         if (window.app && typeof app.updateResourceSelectionSummary === 'function') {
             app.updateResourceSelectionSummary('hangar', items.length);
         } else {
-            count_el.textContent = `共${items.length}项`;
+            count_el.textContent = this._t('resource.count_items', { count: items.length });
         }
 
         const select_all = document.getElementById('hangar-select-all');
@@ -256,8 +263,8 @@ const Hangar = {
                 list_el.innerHTML = `
                     <div class="res-empty-state">
                         <i class="${this.icon}"></i>
-                        <h3>没有匹配的机库</h3>
-                        <p>换个关键词试试</p>
+                        <h3>${this._t('resource.no_matching_hangar')}</h3>
+                        <p>${this._t('resource.try_another_keyword')}</p>
                     </div>
                 `;
                 return;
@@ -289,15 +296,15 @@ const Hangar = {
             container.innerHTML = `
                 <div class="res-empty-state">
                     <i class="ri-plane-line"></i>
-                    <h3>还没有机库配置</h3>
-                    <p>点击右侧"打开机库"按钮，将机库文件夹放入后刷新</p>
+                    <h3>${this._t('tools.empty_hangar')}</h3>
+                    <p>${this._t('tools.empty_hangar_desc')}</p>
                 </div>
             `;
         }
         if (window.app && typeof app.updateResourceSelectionSummary === 'function') {
             app.updateResourceSelectionSummary('hangar', 0);
         } else if (count_el) {
-            count_el.textContent = '共0项';
+            count_el.textContent = this._t('resource.count_items', { count: 0 });
         }
     },
 

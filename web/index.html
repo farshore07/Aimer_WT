@@ -283,43 +283,43 @@
                         <div class="res-toolbar">
                             <div class="res-search-box">
                                 <i class="ri-search-2-line"></i>
-                                <input type="text" placeholder="搜索涂装名称或描述" id="skins-search-input" oninput="app.filterSkinsNew(this.value)">
+                                <input type="text" placeholder="搜索涂装名称或描述" data-i18n-placeholder="resource.search_skins" id="skins-search-input" oninput="app.filterSkinsNew(this.value)">
                             </div>
                             <div class="res-toolbar-inline-controls">
                                 <div class="res-filter-wrapper">
                                     <i class="ri-filter-3-line res-filter-icon"></i>
-                                    <span>筛选:</span>
+                                    <span data-i18n="resource.filter_label">筛选:</span>
                                     <div class="res-sort-menu" id="skins-filter-dropdown"></div>
                                     <select class="res-native-filter" id="skins-filter-select" onchange="app.filterSkinsStatus(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="all">全部</option>
-                                        <option value="enabled">已启用</option>
-                                        <option value="disabled">已禁用</option>
+                                        <option value="all" data-i18n="resource.filter_all">全部</option>
+                                        <option value="enabled" data-i18n="resource.filter_enabled">已启用</option>
+                                        <option value="disabled" data-i18n="resource.filter_disabled">已禁用</option>
                                     </select>
                                 </div>
                                 <div class="res-sort-wrapper">
                                     <i class="ri-sort-desc"></i>
-                                    <span>排序:</span>
+                                    <span data-i18n="resource.sort_label">排序:</span>
                                     <div class="res-sort-menu" id="skins-sort-dropdown"></div>
                                     <select class="res-native-sort" id="skins-sort-select" onchange="app.sortSkinsNew(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="update_time">更新时间</option>
-                                        <option value="name">名称</option>
-                                        <option value="size">大小</option>
+                                        <option value="update_time" data-i18n="resource.sort_updated">更新时间</option>
+                                        <option value="name" data-i18n="resource.sort_name">名称</option>
+                                        <option value="size" data-i18n="resource.sort_size">大小</option>
                                     </select>
                                 </div>
-                                <button class="res-sort-order-btn" id="skins-sort-order-btn" title="切换排序方向" onclick="app.toggleSkinsSortOrder()">
+                                <button class="res-sort-order-btn" id="skins-sort-order-btn" title="切换排序方向" data-i18n-title="resource.sort_direction" onclick="app.toggleSkinsSortOrder()">
                                     <i class="ri-sort-desc"></i>
                                 </button>
                             </div>
                             <div class="res-toolbar-right">
                                 <label class="res-select-all">
-                                    <input type="checkbox" id="skins-select-all"> 全选
+                                    <input type="checkbox" id="skins-select-all"> <span data-i18n="resource.select_all">全选</span>
                                 </label>
                                 <div class="res-view-toggle is-card-mode" data-resource-type="skins">
-                                    <button class="active" id="skins-view-card" type="button" onclick="app.switchResourceViewMode('skins', 'card')" title="卡片视图" aria-label="卡片视图">
-                                        <i class="ri-layout-grid-line"></i><span class="res-view-label">卡片视图</span>
+                                    <button class="active" id="skins-view-card" type="button" onclick="app.switchResourceViewMode('skins', 'card')" title="卡片视图" aria-label="卡片视图" data-i18n-title="resource.view_card" data-i18n-aria-label="resource.view_card">
+                                        <i class="ri-layout-grid-line"></i><span class="res-view-label" data-i18n="resource.view_card">卡片视图</span>
                                     </button>
-                                    <button id="skins-view-list" type="button" onclick="app.switchResourceViewMode('skins', 'list')" title="列表视图" aria-label="列表视图">
-                                        <i class="ri-list-unordered"></i><span class="res-view-label">列表视图</span>
+                                    <button id="skins-view-list" type="button" onclick="app.switchResourceViewMode('skins', 'list')" title="列表视图" aria-label="列表视图" data-i18n-title="resource.view_list" data-i18n-aria-label="resource.view_list">
+                                        <i class="ri-list-unordered"></i><span class="res-view-label" data-i18n="resource.view_list">列表视图</span>
                                     </button>
                                 </div>
                             </div>
@@ -340,59 +340,59 @@
                             <div class="res-side-panel">
                                 <!-- 操作面板 -->
                                 <div class="res-panel-card res-ops-card">
-                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> 操作面板</div>
+                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> <span data-i18n="resource.operation_panel">操作面板</span></div>
                                     <div class="res-ops-hint" id="skins-ops-hint">
                                         <span id="skins-count">共0项</span><br>
                                         <span id="skins-selected-hint">至少选择1个项目</span>
                                     </div>
                                     <div class="res-ops-actions res-ops-actions-four">
-                                        <button id="skins-op-open" onclick="app.open_selected_resource_folder('skins')" title="打开">
-                                            <i class="ri-folder-open-line"></i> 打开
+                                        <button id="skins-op-open" onclick="app.open_selected_resource_folder('skins')" title="打开" data-i18n-title="resource.action_open">
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.action_open">打开</span>
                                         </button>
-                                        <button id="skins-op-enable" onclick="app.enable_selected_resources('skins')" title="启用">
-                                            <i class="ri-play-circle-line"></i> 启用
+                                        <button id="skins-op-enable" onclick="app.enable_selected_resources('skins')" title="启用" data-i18n-title="resource.action_enable">
+                                            <i class="ri-play-circle-line"></i> <span data-i18n="resource.action_enable">启用</span>
                                         </button>
-                                        <button id="skins-op-disable" onclick="app.disable_selected_resources('skins')" title="禁用">
-                                            <i class="ri-forbid-line"></i> 禁用
+                                        <button id="skins-op-disable" onclick="app.disable_selected_resources('skins')" title="禁用" data-i18n-title="resource.action_disable">
+                                            <i class="ri-forbid-line"></i> <span data-i18n="resource.action_disable">禁用</span>
                                         </button>
-                                        <button id="skins-op-delete" class="danger-action" onclick="app.delete_selected_resources('skins')" title="删除">
-                                            <i class="ri-delete-bin-line"></i> 删除
+                                        <button id="skins-op-delete" class="danger-action" onclick="app.delete_selected_resources('skins')" title="删除" data-i18n-title="resource.action_delete">
+                                            <i class="ri-delete-bin-line"></i> <span data-i18n="resource.action_delete">删除</span>
                                         </button>
                                     </div>
                                 </div>
                                 <!-- 存储空间 -->
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> 存储空间</div>
+                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> <span data-i18n="resource.storage_space">存储空间</span></div>
                                     <div class="res-storage-info">
                                         <div class="res-storage-detail">
-                                            <span>总共</span>
-                                            <span id="skins-storage-total">未获取</span>
+                                            <span data-i18n="resource.storage_total">总共</span>
+                                            <span id="skins-storage-total" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-bar">
                                             <div class="res-storage-bar-fill" id="skins-storage-bar" style="width: 0%"></div>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>剩余</span>
-                                            <span id="skins-storage-used">未获取</span>
+                                            <span data-i18n="resource.storage_free">剩余</span>
+                                            <span id="skins-storage-used" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>涂装库已使用</span>
-                                            <span id="skins-storage-folder">未获取</span>
+                                            <span data-i18n="resource.storage_used_skins">涂装库已使用</span>
+                                            <span id="skins-storage-folder" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                     </div>
                                 </div>
                                 <!-- 快速入口 -->
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> 快速入口</div>
+                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> <span data-i18n="resource.quick_links">快速入口</span></div>
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" onclick="app.openFolder('userskins')">
-                                            <i class="ri-folder-open-line"></i> 打开 UserSkins 文件夹
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.open_userskins_folder">打开 UserSkins 文件夹</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.importSkinZipDialog()">
-                                            <i class="ri-upload-2-line"></i> 导入涂装文件
+                                            <i class="ri-upload-2-line"></i> <span data-i18n="resource.import_skin_file">导入涂装文件</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.refreshSkins({manual:true})" id="btn-refresh-skins">
-                                            <i class="ri-refresh-line"></i> 刷新列表
+                                            <i class="ri-refresh-line"></i> <span data-i18n="resource.refresh_list">刷新列表</span>
                                         </button>
                                     </div>
                                 </div>
@@ -405,40 +405,40 @@
                         <div class="res-toolbar">
                             <div class="res-search-box">
                                 <i class="ri-search-2-line"></i>
-                                <input type="text" placeholder="搜索炮镜名称或描述" id="sights-search-input" oninput="app.filterSightsNew(this.value)">
+                                <input type="text" placeholder="搜索炮镜名称或描述" data-i18n-placeholder="resource.search_sights" id="sights-search-input" oninput="app.filterSightsNew(this.value)">
                             </div>
                             <div class="res-toolbar-inline-controls">
                                 <div class="res-filter-wrapper">
                                     <i class="ri-filter-3-line res-filter-icon"></i>
-                                    <span>筛选:</span>
+                                    <span data-i18n="resource.filter_label">筛选:</span>
                                     <div class="res-sort-menu" id="sights-filter-dropdown"></div>
                                     <select class="res-native-filter" id="sights-filter-select" onchange="app.filterSightsStatus(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="all">全部</option>
-                                        <option value="enabled">已启用</option>
-                                        <option value="disabled">已禁用</option>
+                                        <option value="all" data-i18n="resource.filter_all">全部</option>
+                                        <option value="enabled" data-i18n="resource.filter_enabled">已启用</option>
+                                        <option value="disabled" data-i18n="resource.filter_disabled">已禁用</option>
                                     </select>
                                 </div>
                                 <div class="res-sort-wrapper">
-                                    <i class="ri-sort-desc"></i> <span>排序:</span>
+                                    <i class="ri-sort-desc"></i> <span data-i18n="resource.sort_label">排序:</span>
                                     <div class="res-sort-menu" id="sights-sort-dropdown"></div>
                                     <select class="res-native-sort" id="sights-sort-select" onchange="app.sortSightsNew(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="update_time">更新时间</option>
-                                        <option value="name">名称</option>
-                                        <option value="size">大小</option>
+                                        <option value="update_time" data-i18n="resource.sort_updated">更新时间</option>
+                                        <option value="name" data-i18n="resource.sort_name">名称</option>
+                                        <option value="size" data-i18n="resource.sort_size">大小</option>
                                     </select>
                                 </div>
-                                <button class="res-sort-order-btn" id="sights-sort-order-btn" title="切换排序方向" onclick="app.toggleSightsSortOrder()">
+                                <button class="res-sort-order-btn" id="sights-sort-order-btn" title="切换排序方向" data-i18n-title="resource.sort_direction" onclick="app.toggleSightsSortOrder()">
                                     <i class="ri-sort-desc"></i>
                                 </button>
                             </div>
                             <div class="res-toolbar-right">
-                                <label class="res-select-all"><input type="checkbox" id="sights-select-all"> 全选</label>
+                                <label class="res-select-all"><input type="checkbox" id="sights-select-all"> <span data-i18n="resource.select_all">全选</span></label>
                                 <div class="res-view-toggle is-card-mode" data-resource-type="sights">
-                                    <button class="active" type="button" onclick="app.switchResourceViewMode('sights', 'card')" title="卡片视图" aria-label="卡片视图">
-                                        <i class="ri-layout-grid-line"></i><span class="res-view-label">卡片视图</span>
+                                    <button class="active" type="button" onclick="app.switchResourceViewMode('sights', 'card')" title="卡片视图" aria-label="卡片视图" data-i18n-title="resource.view_card" data-i18n-aria-label="resource.view_card">
+                                        <i class="ri-layout-grid-line"></i><span class="res-view-label" data-i18n="resource.view_card">卡片视图</span>
                                     </button>
-                                    <button type="button" onclick="app.switchResourceViewMode('sights', 'list')" title="列表视图" aria-label="列表视图">
-                                        <i class="ri-list-unordered"></i><span class="res-view-label">列表视图</span>
+                                    <button type="button" onclick="app.switchResourceViewMode('sights', 'list')" title="列表视图" aria-label="列表视图" data-i18n-title="resource.view_list" data-i18n-aria-label="resource.view_list">
+                                        <i class="ri-list-unordered"></i><span class="res-view-label" data-i18n="resource.view_list">列表视图</span>
                                     </button>
                                 </div>
                             </div>
@@ -455,52 +455,52 @@
                             </div>
                             <div class="res-side-panel">
                                 <div class="res-panel-card res-ops-card">
-                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> 操作面板</div>
+                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> <span data-i18n="resource.operation_panel">操作面板</span></div>
                                     <div class="res-ops-hint" id="sights-ops-hint">
                                         <span id="sights-count">共0项</span><br>
                                         <span id="sights-selected-hint">至少选择1个项目</span>
                                     </div>
                                     <div class="res-ops-actions res-ops-actions-four">
-                                        <button id="sights-op-open" onclick="app.open_selected_resource_folder('sights')" title="打开">
-                                            <i class="ri-folder-open-line"></i> 打开
+                                        <button id="sights-op-open" onclick="app.open_selected_resource_folder('sights')" title="打开" data-i18n-title="resource.action_open">
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.action_open">打开</span>
                                         </button>
-                                        <button id="sights-op-enable" onclick="app.enable_selected_resources('sights')" title="启用">
-                                            <i class="ri-play-circle-line"></i> 启用
+                                        <button id="sights-op-enable" onclick="app.enable_selected_resources('sights')" title="启用" data-i18n-title="resource.action_enable">
+                                            <i class="ri-play-circle-line"></i> <span data-i18n="resource.action_enable">启用</span>
                                         </button>
-                                        <button id="sights-op-disable" onclick="app.disable_selected_resources('sights')" title="禁用">
-                                            <i class="ri-forbid-line"></i> 禁用
+                                        <button id="sights-op-disable" onclick="app.disable_selected_resources('sights')" title="禁用" data-i18n-title="resource.action_disable">
+                                            <i class="ri-forbid-line"></i> <span data-i18n="resource.action_disable">禁用</span>
                                         </button>
-                                        <button id="sights-op-delete" class="danger-action" onclick="app.delete_selected_resources('sights')" title="删除">
-                                            <i class="ri-delete-bin-line"></i> 删除
+                                        <button id="sights-op-delete" class="danger-action" onclick="app.delete_selected_resources('sights')" title="删除" data-i18n-title="resource.action_delete">
+                                            <i class="ri-delete-bin-line"></i> <span data-i18n="resource.action_delete">删除</span>
                                         </button>
                                     </div>
                                 </div>
                                 <!-- UID 选择器保留 -->
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-user-line"></i> UID 选择</div>
+                                    <div class="res-panel-title"><i class="ri-user-line"></i> <span data-i18n="resource.uid_select">UID 选择</span></div>
                                     <div class="uid-selector-wrapper" style="margin-bottom:8px;">
                                         <div class="uid-selector-row">
                                             <div id="sights-uid-select-wrapper" class="uid-select-wrapper"></div>
-                                            <button class="btn-v2 icon-only" onclick="app.refreshSightsUidList()" title="刷新 UID 列表">
+                                            <button class="btn-v2 icon-only" onclick="app.refreshSightsUidList()" title="刷新 UID 列表" data-i18n-title="tools.refresh_uid_list">
                                                 <i class="ri-refresh-line"></i>
                                             </button>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> 快速入口</div>
+                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> <span data-i18n="resource.quick_links">快速入口</span></div>
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" id="btn-sights-secondary" onclick="app.openSightsFolder()">
-                                            <i class="ri-folder-open-line"></i> 打开 UserSights 文件夹
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.open_usersights_folder">打开 UserSights 文件夹</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.importSightsFileDialog()">
-                                            <i class="ri-upload-cloud-2-line"></i> 导入炮镜文件
+                                            <i class="ri-upload-cloud-2-line"></i> <span data-i18n="resource.import_sight_file">导入炮镜文件</span>
                                         </button>
                                         <button class="res-quick-link" id="btn-sights-primary" onclick="app.selectSightsPath()">
-                                            <i class="ri-folder-2-line"></i> 手动选择路径
+                                            <i class="ri-folder-2-line"></i> <span data-i18n="tools.manual_select_path">手动选择路径</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.refreshSights({manual:true})" id="btn-refresh-sights">
-                                            <i class="ri-refresh-line"></i> 刷新列表
+                                            <i class="ri-refresh-line"></i> <span data-i18n="resource.refresh_list">刷新列表</span>
                                         </button>
                                     </div>
                                 </div>
@@ -513,40 +513,40 @@
                         <div class="res-toolbar">
                             <div class="res-search-box">
                                 <i class="ri-search-2-line"></i>
-                                <input type="text" placeholder="搜索任务名称或描述" id="tasks-search-input" oninput="TaskLibrary.filter_list(this.value)">
+                                <input type="text" placeholder="搜索任务名称或描述" data-i18n-placeholder="resource.search_tasks" id="tasks-search-input" oninput="TaskLibrary.filter_list(this.value)">
                             </div>
                             <div class="res-toolbar-inline-controls">
                                 <div class="res-filter-wrapper">
                                     <i class="ri-filter-3-line res-filter-icon"></i>
-                                    <span>筛选:</span>
+                                    <span data-i18n="resource.filter_label">筛选:</span>
                                     <div class="res-sort-menu" id="tasks-filter-dropdown"></div>
                                     <select class="res-native-filter" id="tasks-filter-select" onchange="TaskLibrary.filter_status(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="all">全部</option>
-                                        <option value="enabled">已启用</option>
-                                        <option value="disabled">已禁用</option>
+                                        <option value="all" data-i18n="resource.filter_all">全部</option>
+                                        <option value="enabled" data-i18n="resource.filter_enabled">已启用</option>
+                                        <option value="disabled" data-i18n="resource.filter_disabled">已禁用</option>
                                     </select>
                                 </div>
                                 <div class="res-sort-wrapper">
-                                    <i class="ri-sort-desc"></i> <span>排序:</span>
+                                    <i class="ri-sort-desc"></i> <span data-i18n="resource.sort_label">排序:</span>
                                     <div class="res-sort-menu" id="tasks-sort-dropdown"></div>
                                     <select class="res-native-sort" id="tasks-sort-select" onchange="TaskLibrary.sort_list(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="update_time">更新时间</option>
-                                        <option value="name">名称</option>
-                                        <option value="size">大小</option>
+                                        <option value="update_time" data-i18n="resource.sort_updated">更新时间</option>
+                                        <option value="name" data-i18n="resource.sort_name">名称</option>
+                                        <option value="size" data-i18n="resource.sort_size">大小</option>
                                     </select>
                                 </div>
-                                <button class="res-sort-order-btn" id="tasks-sort-order-btn" title="切换排序方向" onclick="TaskLibrary.toggle_sort_order()">
+                                <button class="res-sort-order-btn" id="tasks-sort-order-btn" title="切换排序方向" data-i18n-title="resource.sort_direction" onclick="TaskLibrary.toggle_sort_order()">
                                     <i class="ri-sort-desc"></i>
                                 </button>
                             </div>
                             <div class="res-toolbar-right">
-                                <label class="res-select-all"><input type="checkbox" id="tasks-select-all"> 全选</label>
+                                <label class="res-select-all"><input type="checkbox" id="tasks-select-all"> <span data-i18n="resource.select_all">全选</span></label>
                                 <div class="res-view-toggle is-card-mode" data-resource-type="tasks">
-                                    <button class="active" type="button" onclick="app.switchResourceViewMode('tasks', 'card')" title="卡片视图" aria-label="卡片视图">
-                                        <i class="ri-layout-grid-line"></i><span class="res-view-label">卡片视图</span>
+                                    <button class="active" type="button" onclick="app.switchResourceViewMode('tasks', 'card')" title="卡片视图" aria-label="卡片视图" data-i18n-title="resource.view_card" data-i18n-aria-label="resource.view_card">
+                                        <i class="ri-layout-grid-line"></i><span class="res-view-label" data-i18n="resource.view_card">卡片视图</span>
                                     </button>
-                                    <button type="button" onclick="app.switchResourceViewMode('tasks', 'list')" title="列表视图" aria-label="列表视图">
-                                        <i class="ri-list-unordered"></i><span class="res-view-label">列表视图</span>
+                                    <button type="button" onclick="app.switchResourceViewMode('tasks', 'list')" title="列表视图" aria-label="列表视图" data-i18n-title="resource.view_list" data-i18n-aria-label="resource.view_list">
+                                        <i class="ri-list-unordered"></i><span class="res-view-label" data-i18n="resource.view_list">列表视图</span>
                                     </button>
                                 </div>
                             </div>
@@ -563,60 +563,60 @@
                             </div>
                             <div class="res-side-panel">
                                 <div class="res-panel-card res-ops-card">
-                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> 操作面板</div>
+                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> <span data-i18n="resource.operation_panel">操作面板</span></div>
                                     <div class="res-ops-hint" id="tasks-ops-hint">
                                         <span id="tasks-count">共0项</span><br>
                                         <span id="tasks-selected-hint">至少选择1个项目</span>
                                     </div>
                                     <div class="res-ops-actions res-ops-actions-four">
-                                        <button id="tasks-op-open" onclick="app.open_selected_resource_folder('tasks')" title="打开">
-                                            <i class="ri-folder-open-line"></i> 打开
+                                        <button id="tasks-op-open" onclick="app.open_selected_resource_folder('tasks')" title="打开" data-i18n-title="resource.action_open">
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.action_open">打开</span>
                                         </button>
-                                        <button id="tasks-op-enable" onclick="app.enable_selected_resources('tasks')" title="启用">
-                                            <i class="ri-play-circle-line"></i> 启用
+                                        <button id="tasks-op-enable" onclick="app.enable_selected_resources('tasks')" title="启用" data-i18n-title="resource.action_enable">
+                                            <i class="ri-play-circle-line"></i> <span data-i18n="resource.action_enable">启用</span>
                                         </button>
-                                        <button id="tasks-op-disable" onclick="app.disable_selected_resources('tasks')" title="禁用">
-                                            <i class="ri-forbid-line"></i> 禁用
+                                        <button id="tasks-op-disable" onclick="app.disable_selected_resources('tasks')" title="禁用" data-i18n-title="resource.action_disable">
+                                            <i class="ri-forbid-line"></i> <span data-i18n="resource.action_disable">禁用</span>
                                         </button>
-                                        <button id="tasks-op-delete" class="danger-action" onclick="app.delete_selected_resources('tasks')" title="删除">
-                                            <i class="ri-delete-bin-line"></i> 删除
+                                        <button id="tasks-op-delete" class="danger-action" onclick="app.delete_selected_resources('tasks')" title="删除" data-i18n-title="resource.action_delete">
+                                            <i class="ri-delete-bin-line"></i> <span data-i18n="resource.action_delete">删除</span>
                                         </button>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> 存储空间</div>
+                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> <span data-i18n="resource.storage_space">存储空间</span></div>
                                     <div class="res-storage-info">
                                         <div class="res-storage-detail">
-                                            <span>总共</span>
-                                            <span id="tasks-storage-total">未获取</span>
+                                            <span data-i18n="resource.storage_total">总共</span>
+                                            <span id="tasks-storage-total" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-bar">
                                             <div class="res-storage-bar-fill" id="tasks-storage-bar" style="width: 0%"></div>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>剩余</span>
-                                            <span id="tasks-storage-used">未获取</span>
+                                            <span data-i18n="resource.storage_free">剩余</span>
+                                            <span id="tasks-storage-used" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>任务库已使用</span>
-                                            <span id="tasks-storage-folder">未获取</span>
+                                            <span data-i18n="resource.storage_used_tasks">任务库已使用</span>
+                                            <span id="tasks-storage-folder" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> 快速入口</div>
+                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> <span data-i18n="resource.quick_links">快速入口</span></div>
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" onclick="app.openFolder('task_library')">
-                                            <i class="ri-folder-open-line"></i> 打开任务库
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.open_task_library">打开任务库</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('game')">
-                                            <i class="ri-gamepad-line"></i> 打开游戏目录
+                                            <i class="ri-gamepad-line"></i> <span data-i18n="resource.open_game_directory">打开游戏目录</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('user_missions')">
-                                            <i class="ri-folder-2-line"></i> 打开 UserMissions
+                                            <i class="ri-folder-2-line"></i> <span data-i18n="resource.open_usermissions">打开 UserMissions</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.refreshTasks({manual:true})" id="btn-refresh-tasks">
-                                            <i class="ri-refresh-line"></i> 刷新列表
+                                            <i class="ri-refresh-line"></i> <span data-i18n="resource.refresh_list">刷新列表</span>
                                         </button>
                                     </div>
                                 </div>
@@ -629,40 +629,40 @@
                         <div class="res-toolbar">
                             <div class="res-search-box">
                                 <i class="ri-search-2-line"></i>
-                                <input type="text" placeholder="搜索模型名称或描述" id="models-search-input" oninput="ModelLibrary.filter_list(this.value)">
+                                <input type="text" placeholder="搜索模型名称或描述" data-i18n-placeholder="resource.search_models" id="models-search-input" oninput="ModelLibrary.filter_list(this.value)">
                             </div>
                             <div class="res-toolbar-inline-controls">
                                 <div class="res-filter-wrapper">
                                     <i class="ri-filter-3-line res-filter-icon"></i>
-                                    <span>筛选:</span>
+                                    <span data-i18n="resource.filter_label">筛选:</span>
                                     <div class="res-sort-menu" id="models-filter-dropdown"></div>
                                     <select class="res-native-filter" id="models-filter-select" onchange="ModelLibrary.filter_status(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="all">全部</option>
-                                        <option value="enabled">已启用</option>
-                                        <option value="disabled">已禁用</option>
+                                        <option value="all" data-i18n="resource.filter_all">全部</option>
+                                        <option value="enabled" data-i18n="resource.filter_enabled">已启用</option>
+                                        <option value="disabled" data-i18n="resource.filter_disabled">已禁用</option>
                                     </select>
                                 </div>
                                 <div class="res-sort-wrapper">
-                                    <i class="ri-sort-desc"></i> <span>排序:</span>
+                                    <i class="ri-sort-desc"></i> <span data-i18n="resource.sort_label">排序:</span>
                                     <div class="res-sort-menu" id="models-sort-dropdown"></div>
                                     <select class="res-native-sort" id="models-sort-select" onchange="ModelLibrary.sort_list(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="update_time">更新时间</option>
-                                        <option value="name">名称</option>
-                                        <option value="size">大小</option>
+                                        <option value="update_time" data-i18n="resource.sort_updated">更新时间</option>
+                                        <option value="name" data-i18n="resource.sort_name">名称</option>
+                                        <option value="size" data-i18n="resource.sort_size">大小</option>
                                     </select>
                                 </div>
-                                <button class="res-sort-order-btn" id="models-sort-order-btn" title="切换排序方向" onclick="ModelLibrary.toggle_sort_order()">
+                                <button class="res-sort-order-btn" id="models-sort-order-btn" title="切换排序方向" data-i18n-title="resource.sort_direction" onclick="ModelLibrary.toggle_sort_order()">
                                     <i class="ri-sort-desc"></i>
                                 </button>
                             </div>
                             <div class="res-toolbar-right">
-                                <label class="res-select-all"><input type="checkbox" id="models-select-all"> 全选</label>
+                                <label class="res-select-all"><input type="checkbox" id="models-select-all"> <span data-i18n="resource.select_all">全选</span></label>
                                 <div class="res-view-toggle is-card-mode" data-resource-type="models">
-                                    <button class="active" type="button" onclick="app.switchResourceViewMode('models', 'card')" title="卡片视图" aria-label="卡片视图">
-                                        <i class="ri-layout-grid-line"></i><span class="res-view-label">卡片视图</span>
+                                    <button class="active" type="button" onclick="app.switchResourceViewMode('models', 'card')" title="卡片视图" aria-label="卡片视图" data-i18n-title="resource.view_card" data-i18n-aria-label="resource.view_card">
+                                        <i class="ri-layout-grid-line"></i><span class="res-view-label" data-i18n="resource.view_card">卡片视图</span>
                                     </button>
-                                    <button type="button" onclick="app.switchResourceViewMode('models', 'list')" title="列表视图" aria-label="列表视图">
-                                        <i class="ri-list-unordered"></i><span class="res-view-label">列表视图</span>
+                                    <button type="button" onclick="app.switchResourceViewMode('models', 'list')" title="列表视图" aria-label="列表视图" data-i18n-title="resource.view_list" data-i18n-aria-label="resource.view_list">
+                                        <i class="ri-list-unordered"></i><span class="res-view-label" data-i18n="resource.view_list">列表视图</span>
                                     </button>
                                 </div>
                             </div>
@@ -679,63 +679,63 @@
                             </div>
                             <div class="res-side-panel">
                                 <div class="res-panel-card res-ops-card">
-                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> 操作面板</div>
+                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> <span data-i18n="resource.operation_panel">操作面板</span></div>
                                     <div class="res-ops-hint" id="models-ops-hint">
                                         <span id="models-count">共0项</span><br>
                                         <span id="models-selected-hint">至少选择1个项目</span>
                                     </div>
                                     <div class="res-ops-actions res-ops-actions-four">
-                                        <button id="models-op-open" onclick="app.open_selected_resource_folder('models')" title="打开">
-                                            <i class="ri-folder-open-line"></i> 打开
+                                        <button id="models-op-open" onclick="app.open_selected_resource_folder('models')" title="打开" data-i18n-title="resource.action_open">
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.action_open">打开</span>
                                         </button>
-                                        <button id="models-op-enable" onclick="app.enable_selected_resources('models')" title="启用">
-                                            <i class="ri-play-circle-line"></i> 启用
+                                        <button id="models-op-enable" onclick="app.enable_selected_resources('models')" title="启用" data-i18n-title="resource.action_enable">
+                                            <i class="ri-play-circle-line"></i> <span data-i18n="resource.action_enable">启用</span>
                                         </button>
-                                        <button id="models-op-disable" onclick="app.disable_selected_resources('models')" title="禁用">
-                                            <i class="ri-forbid-line"></i> 禁用
+                                        <button id="models-op-disable" onclick="app.disable_selected_resources('models')" title="禁用" data-i18n-title="resource.action_disable">
+                                            <i class="ri-forbid-line"></i> <span data-i18n="resource.action_disable">禁用</span>
                                         </button>
-                                        <button id="models-op-delete" class="danger-action" onclick="app.delete_selected_resources('models')" title="删除">
-                                            <i class="ri-delete-bin-line"></i> 删除
+                                        <button id="models-op-delete" class="danger-action" onclick="app.delete_selected_resources('models')" title="删除" data-i18n-title="resource.action_delete">
+                                            <i class="ri-delete-bin-line"></i> <span data-i18n="resource.action_delete">删除</span>
                                         </button>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> 存储空间</div>
+                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> <span data-i18n="resource.storage_space">存储空间</span></div>
                                     <div class="res-storage-info">
                                         <div class="res-storage-detail">
-                                            <span>总共</span>
-                                            <span id="models-storage-total">未获取</span>
+                                            <span data-i18n="resource.storage_total">总共</span>
+                                            <span id="models-storage-total" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-bar">
                                             <div class="res-storage-bar-fill" id="models-storage-bar" style="width: 0%"></div>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>剩余</span>
-                                            <span id="models-storage-used">未获取</span>
+                                            <span data-i18n="resource.storage_free">剩余</span>
+                                            <span id="models-storage-used" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>模型库已使用</span>
-                                            <span id="models-storage-folder">未获取</span>
+                                            <span data-i18n="resource.storage_used_models">模型库已使用</span>
+                                            <span id="models-storage-folder" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> 快速入口</div>
+                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> <span data-i18n="resource.quick_links">快速入口</span></div>
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" onclick="app.openFolder('model_library')">
-                                            <i class="ri-folder-open-line"></i> 打开模型库
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.open_model_library">打开模型库</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('game')">
-                                            <i class="ri-gamepad-line"></i> 打开游戏目录
+                                            <i class="ri-gamepad-line"></i> <span data-i18n="resource.open_game_directory">打开游戏目录</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('user_missions')">
-                                            <i class="ri-folder-2-line"></i> 打开 UserMissions
+                                            <i class="ri-folder-2-line"></i> <span data-i18n="resource.open_usermissions">打开 UserMissions</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('pkg_local')">
-                                            <i class="ri-folder-2-line"></i> 打开 pkg_local
+                                            <i class="ri-folder-2-line"></i> <span data-i18n="resource.open_pkg_local">打开 pkg_local</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.refreshModels({manual:true})" id="btn-refresh-models">
-                                            <i class="ri-refresh-line"></i> 刷新列表
+                                            <i class="ri-refresh-line"></i> <span data-i18n="resource.refresh_list">刷新列表</span>
                                         </button>
                                     </div>
                                 </div>
@@ -748,40 +748,40 @@
                         <div class="res-toolbar">
                             <div class="res-search-box">
                                 <i class="ri-search-2-line"></i>
-                                <input type="text" placeholder="搜索机库名称或描述" id="hangar-search-input" oninput="Hangar.filter_list(this.value)">
+                                <input type="text" placeholder="搜索机库名称或描述" data-i18n-placeholder="resource.search_hangar" id="hangar-search-input" oninput="Hangar.filter_list(this.value)">
                             </div>
                             <div class="res-toolbar-inline-controls">
                                 <div class="res-filter-wrapper">
                                     <i class="ri-filter-3-line res-filter-icon"></i>
-                                    <span>筛选:</span>
+                                    <span data-i18n="resource.filter_label">筛选:</span>
                                     <div class="res-sort-menu" id="hangar-filter-dropdown"></div>
                                     <select class="res-native-filter" id="hangar-filter-select" onchange="Hangar.filter_status(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="all">全部</option>
-                                        <option value="enabled">已启用</option>
-                                        <option value="disabled">已禁用</option>
+                                        <option value="all" data-i18n="resource.filter_all">全部</option>
+                                        <option value="enabled" data-i18n="resource.filter_enabled">已启用</option>
+                                        <option value="disabled" data-i18n="resource.filter_disabled">已禁用</option>
                                     </select>
                                 </div>
                                 <div class="res-sort-wrapper">
-                                    <i class="ri-sort-desc"></i> <span>排序:</span>
+                                    <i class="ri-sort-desc"></i> <span data-i18n="resource.sort_label">排序:</span>
                                     <div class="res-sort-menu" id="hangar-sort-dropdown"></div>
                                     <select class="res-native-sort" id="hangar-sort-select" onchange="Hangar.sort_list(this.value)" aria-hidden="true" tabindex="-1">
-                                        <option value="update_time">更新时间</option>
-                                        <option value="name">名称</option>
-                                        <option value="size">大小</option>
+                                        <option value="update_time" data-i18n="resource.sort_updated">更新时间</option>
+                                        <option value="name" data-i18n="resource.sort_name">名称</option>
+                                        <option value="size" data-i18n="resource.sort_size">大小</option>
                                     </select>
                                 </div>
-                                <button class="res-sort-order-btn" id="hangar-sort-order-btn" title="切换排序方向" onclick="Hangar.toggle_sort_order()">
+                                <button class="res-sort-order-btn" id="hangar-sort-order-btn" title="切换排序方向" data-i18n-title="resource.sort_direction" onclick="Hangar.toggle_sort_order()">
                                     <i class="ri-sort-desc"></i>
                                 </button>
                             </div>
                             <div class="res-toolbar-right">
-                                <label class="res-select-all"><input type="checkbox" id="hangar-select-all"> 全选</label>
+                                <label class="res-select-all"><input type="checkbox" id="hangar-select-all"> <span data-i18n="resource.select_all">全选</span></label>
                                 <div class="res-view-toggle is-card-mode" data-resource-type="hangar">
-                                    <button class="active" type="button" onclick="app.switchResourceViewMode('hangar', 'card')" title="卡片视图" aria-label="卡片视图">
-                                        <i class="ri-layout-grid-line"></i><span class="res-view-label">卡片视图</span>
+                                    <button class="active" type="button" onclick="app.switchResourceViewMode('hangar', 'card')" title="卡片视图" aria-label="卡片视图" data-i18n-title="resource.view_card" data-i18n-aria-label="resource.view_card">
+                                        <i class="ri-layout-grid-line"></i><span class="res-view-label" data-i18n="resource.view_card">卡片视图</span>
                                     </button>
-                                    <button type="button" onclick="app.switchResourceViewMode('hangar', 'list')" title="列表视图" aria-label="列表视图">
-                                        <i class="ri-list-unordered"></i><span class="res-view-label">列表视图</span>
+                                    <button type="button" onclick="app.switchResourceViewMode('hangar', 'list')" title="列表视图" aria-label="列表视图" data-i18n-title="resource.view_list" data-i18n-aria-label="resource.view_list">
+                                        <i class="ri-list-unordered"></i><span class="res-view-label" data-i18n="resource.view_list">列表视图</span>
                                     </button>
                                 </div>
                             </div>
@@ -798,57 +798,57 @@
                             </div>
                             <div class="res-side-panel">
                                 <div class="res-panel-card res-ops-card">
-                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> 操作面板</div>
+                                    <div class="res-panel-title"><i class="ri-dashboard-line"></i> <span data-i18n="resource.operation_panel">操作面板</span></div>
                                     <div class="res-ops-hint" id="hangar-ops-hint">
                                         <span id="hangar-count">共0项</span><br>
                                         <span id="hangar-selected-hint">至少选择1个项目</span>
                                     </div>
                                     <div class="res-ops-actions res-ops-actions-four">
-                                        <button id="hangar-op-open" onclick="app.open_selected_resource_folder('hangar')" title="打开">
-                                            <i class="ri-folder-open-line"></i> 打开
+                                        <button id="hangar-op-open" onclick="app.open_selected_resource_folder('hangar')" title="打开" data-i18n-title="resource.action_open">
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.action_open">打开</span>
                                         </button>
-                                        <button id="hangar-op-enable" onclick="app.enable_selected_resources('hangar')" title="启用">
-                                            <i class="ri-play-circle-line"></i> 启用
+                                        <button id="hangar-op-enable" onclick="app.enable_selected_resources('hangar')" title="启用" data-i18n-title="resource.action_enable">
+                                            <i class="ri-play-circle-line"></i> <span data-i18n="resource.action_enable">启用</span>
                                         </button>
-                                        <button id="hangar-op-disable" onclick="app.disable_selected_resources('hangar')" title="禁用">
-                                            <i class="ri-forbid-line"></i> 禁用
+                                        <button id="hangar-op-disable" onclick="app.disable_selected_resources('hangar')" title="禁用" data-i18n-title="resource.action_disable">
+                                            <i class="ri-forbid-line"></i> <span data-i18n="resource.action_disable">禁用</span>
                                         </button>
-                                        <button id="hangar-op-delete" class="danger-action" onclick="app.delete_selected_resources('hangar')" title="删除">
-                                            <i class="ri-delete-bin-line"></i> 删除
+                                        <button id="hangar-op-delete" class="danger-action" onclick="app.delete_selected_resources('hangar')" title="删除" data-i18n-title="resource.action_delete">
+                                            <i class="ri-delete-bin-line"></i> <span data-i18n="resource.action_delete">删除</span>
                                         </button>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> 存储空间</div>
+                                    <div class="res-panel-title"><i class="ri-hard-drive-2-line"></i> <span data-i18n="resource.storage_space">存储空间</span></div>
                                     <div class="res-storage-info">
                                         <div class="res-storage-detail">
-                                            <span>总共</span>
-                                            <span id="hangar-storage-total">未获取</span>
+                                            <span data-i18n="resource.storage_total">总共</span>
+                                            <span id="hangar-storage-total" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-bar">
                                             <div class="res-storage-bar-fill" id="hangar-storage-bar" style="width: 0%"></div>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>剩余</span>
-                                            <span id="hangar-storage-used">未获取</span>
+                                            <span data-i18n="resource.storage_free">剩余</span>
+                                            <span id="hangar-storage-used" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                         <div class="res-storage-detail">
-                                            <span>机库已使用</span>
-                                            <span id="hangar-storage-folder">未获取</span>
+                                            <span data-i18n="resource.storage_used_hangar">机库已使用</span>
+                                            <span id="hangar-storage-folder" data-i18n="resource.not_loaded">未获取</span>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="res-panel-card">
-                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> 快速入口</div>
+                                    <div class="res-panel-title"><i class="ri-flashlight-line"></i> <span data-i18n="resource.quick_links">快速入口</span></div>
                                     <div class="res-quick-links">
                                         <button class="res-quick-link" onclick="app.openFolder('hangar_library')">
-                                            <i class="ri-folder-open-line"></i> 打开机库
+                                            <i class="ri-folder-open-line"></i> <span data-i18n="resource.open_hangar_library">打开机库</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.openFolder('game')">
-                                            <i class="ri-gamepad-line"></i> 打开游戏目录
+                                            <i class="ri-gamepad-line"></i> <span data-i18n="resource.open_game_directory">打开游戏目录</span>
                                         </button>
                                         <button class="res-quick-link" onclick="app.refreshHangar({manual:true})" id="btn-refresh-hangar">
-                                            <i class="ri-refresh-line"></i> 刷新列表
+                                            <i class="ri-refresh-line"></i> <span data-i18n="resource.refresh_list">刷新列表</span>
                                         </button>
                                     </div>
                                 </div>

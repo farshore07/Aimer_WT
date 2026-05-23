@@ -270,6 +270,18 @@ const app = {
         this.currentUiLanguage = applied;
         this.updateLanguageSelect(applied);
         this.applyDisclaimerI18n();
+        if (typeof this.refreshResourceDropdownI18n === 'function') {
+            this.refreshResourceDropdownI18n();
+        }
+        if (typeof this.refreshResourceStatusBadgeI18n === 'function') {
+            this.refreshResourceStatusBadgeI18n();
+        }
+        if (typeof this.updateAllResourceSelectionSummaries === 'function') {
+            this.updateAllResourceSelectionSummaries();
+        }
+        if (this.sightsUidDropdown && typeof this.refreshSightsUidList === 'function') {
+            this.refreshSightsUidList();
+        }
         if (this._pathUiReady) {
             this.updatePathUI(this.currentGamePath || "", this.currentPathValid, { skipInstalledRefresh: true });
         }
@@ -704,8 +716,8 @@ const app = {
             listEl.innerHTML = `
                 <div class="res-empty-state">
                     <i class="ri-brush-3-line"></i>
-                    <h3>${hasQuery ? "没有匹配的涂装" : this.t('tools.empty_skins')}</h3>
-                    <p>${hasQuery ? "换个关键词试试" : this.t('tools.empty_skins_desc')}</p>
+                    <h3>${hasQuery ? this.t('resource.no_matching_skins') : this.t('tools.empty_skins')}</h3>
+                    <p>${hasQuery ? this.t('resource.try_another_keyword') : this.t('tools.empty_skins_desc')}</p>
                 </div>
             `;
             this.updateResourceSelectionSummary('skins', 0);
@@ -733,6 +745,7 @@ const app = {
                 const safeName = app._escapeHtml(folderName);
                 const safeDisplayName = app._escapeHtml(displayName);
                 const encodedName = encodeURIComponent(folderName);
+                const disabledLabel = app._escapeHtml(app.t('resource.status_disabled'));
                 const cardTitle = app._escapeHtml(
                     displayName === folderName
                         ? String(it.path || '')
@@ -744,7 +757,7 @@ const app = {
                         <div class="small-card-img-wrapper" style="position:relative;">
                              <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''} skin-img-node"
                                   src="${cover}" loading="lazy" alt="">
-                             ${isDisabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
+                             ${isDisabled ? `<div class="resource-status-badge is-disabled">${disabledLabel}</div>` : ''}
                              <div class="skin-edit-overlay">
                                  <button class="btn-v2 icon-only small secondary skin-edit-btn"
                                          data-skin-name-encoded="${encodedName}"
@@ -1554,6 +1567,39 @@ const app = {
         ResourceDragOverlay.bind('skins');
     },
 
+    setupVoiceLibraryDropZone() {
+        if (!window.ResourceDragOverlay) return;
+        ResourceDragOverlay.register({
+            resource_type: 'voice_library',
+            target_selector: '#page-lib .lib-scroll-area',
+            icon: 'ri-file-zip-line',
+            title: this.t('drop.voice_drag_title'),
+            subtitle: this.t('drop.voice_drag_subtitle'),
+            allowed_exts: ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tgz', '.tbz2', '.bank'],
+            invalid_message: this.t('drop.voice_invalid_archive'),
+            missing_path_message: this.t('drop.voice_missing_path'),
+            backend_drop_fallback: true,
+            active_check: () => {
+                const activeId = (document.querySelector('.page.active') || {}).id || '';
+                return activeId === 'page-lib';
+            },
+            on_file_drop: async (file) => {
+                await this.uploadArchiveFileForImport(file, 'voice');
+            },
+            on_drop: async (archivePath) => {
+                if (!window.pywebview?.api?.import_voice_zip_from_path) {
+                    this.showAlert(this.t('common.error'), this.t('drop.voice_api_not_ready'), 'error');
+                    return;
+                }
+                const started = await pywebview.api.import_voice_zip_from_path(archivePath);
+                if (started === false) {
+                    this.showAlert(this.t('common.error'), this.t('drop.voice_import_start_failed'), 'error');
+                }
+            }
+        });
+        ResourceDragOverlay.bind('voice_library');
+    },
+
     setupSightsDropZone() {
         if (!window.ResourceDragOverlay) return;
         ResourceDragOverlay.register({
@@ -1630,19 +1676,29 @@ const app = {
         const folderEl = document.getElementById(`${prefix}-storage-folder`);
         const barEl = document.getElementById(`${prefix}-storage-bar`);
         if (!totalEl || !usedEl || !folderEl || !barEl) return;
+        const setTranslatedValue = (el, key) => {
+            el.setAttribute('data-i18n', key);
+            el.textContent = this.t(key);
+        };
+        const setStorageValue = (el, text) => {
+            el.removeAttribute('data-i18n');
+            el.textContent = text;
+        };
 
         if (state === 'loading') {
-            totalEl.textContent = '读取中...';
-            usedEl.textContent = '读取中...';
-            folderEl.textContent = '读取中...';
+            setTranslatedValue(totalEl, 'resource.loading');
+            setTranslatedValue(usedEl, 'resource.loading');
+            setTranslatedValue(folderEl, 'resource.loading');
             barEl.style.width = '0%';
             return;
         }
 
         if (state !== 'ready' || !data || !data.success) {
-            totalEl.textContent = '未获取';
-            usedEl.textContent = '未获取';
-            folderEl.textContent = data && data.reason === 'path_not_found' ? '未设置路径' : '未获取';
+            setTranslatedValue(totalEl, 'resource.not_loaded');
+            setTranslatedValue(usedEl, 'resource.not_loaded');
+            setTranslatedValue(folderEl, data && data.reason === 'path_not_found'
+                ? 'resource.path_not_set'
+                : 'resource.not_loaded');
             barEl.style.width = '0%';
             return;
         }
@@ -1653,9 +1709,9 @@ const app = {
         const usedPercent = totalBytes > 0 ? Math.max(0, Math.min(100, usedBytes / totalBytes * 100)) : 0;
         const remainingBytes = totalBytes > 0 ? Math.max(0, totalBytes - usedBytes) : 0;
 
-        totalEl.textContent = this._formatStorageBytes(totalBytes);
-        usedEl.textContent = this._formatStorageBytes(remainingBytes);
-        folderEl.textContent = this._formatStorageBytes(folderBytes);
+        setStorageValue(totalEl, this._formatStorageBytes(totalBytes));
+        setStorageValue(usedEl, this._formatStorageBytes(remainingBytes));
+        setStorageValue(folderEl, this._formatStorageBytes(folderBytes));
         barEl.style.width = `${usedPercent.toFixed(1)}%`;
     },
 
@@ -1666,7 +1722,11 @@ const app = {
         /* 如果当前已有有效数据，跳过 loading 状态，静默刷新 */
         const totalEl = document.getElementById(`${type}-storage-total`);
         const cur = totalEl ? totalEl.textContent.trim() : '';
-        const isFirstLoad = !cur || cur === '未获取' || cur === '读取中...';
+        const isFirstLoad = !cur
+            || cur === '未获取'
+            || cur === '读取中...'
+            || cur === this.t('resource.not_loaded')
+            || cur === this.t('resource.loading');
         if (isFirstLoad) {
             this._setResourceStorageState(type, 'loading');
         }
@@ -4354,6 +4414,9 @@ app.init = async function () {
         this.sightsPath = state.sights_path || null;
         this._sightsLoaded = false;
         this.loadSightsView();
+        if (typeof this.setupVoiceLibraryDropZone === 'function') {
+            this.setupVoiceLibraryDropZone();
+        }
         if (typeof this.setupSkinsDropZone === 'function') {
             this.setupSkinsDropZone();
         }
@@ -4663,16 +4726,77 @@ app.switchResourceView = function (target) {
     }
 };
 
-app.initResourceSortDropdowns = function () {
-    if (!window.AppDropdownMenu) return;
+app.get_resource_select_options = function (select_el) {
+    if (!select_el) return [];
+    return Array.from(select_el.options).map((option) => ({
+        value: option.value,
+        label: option.textContent.trim()
+    }));
+};
 
-    const sort_configs = [
+app.update_resource_dropdown_language = function (configs, dropdowns, placeholder_key) {
+    if (!configs || !dropdowns) return;
+    const placeholder = this.t(placeholder_key).replace(/:$/, '');
+    configs.forEach((config) => {
+        const select_el = document.getElementById(config.select_id);
+        const dropdown = dropdowns[config.type];
+        if (!select_el || !dropdown) return;
+        const options = this.get_resource_select_options(select_el);
+        dropdown.placeholder = placeholder;
+        dropdown.setOptions(options, true);
+        dropdown.setValue(select_el.value || options[0]?.value || '', false);
+    });
+};
+
+app.get_resource_sort_dropdown_configs = function () {
+    return [
         { type: 'skins', select_id: 'skins-sort-select', dropdown_id: 'skins-sort-dropdown' },
         { type: 'sights', select_id: 'sights-sort-select', dropdown_id: 'sights-sort-dropdown' },
         { type: 'tasks', select_id: 'tasks-sort-select', dropdown_id: 'tasks-sort-dropdown' },
         { type: 'models', select_id: 'models-sort-select', dropdown_id: 'models-sort-dropdown' },
         { type: 'hangar', select_id: 'hangar-sort-select', dropdown_id: 'hangar-sort-dropdown' }
     ];
+};
+
+app.get_resource_filter_dropdown_configs = function () {
+    return [
+        { type: 'skins', select_id: 'skins-filter-select', dropdown_id: 'skins-filter-dropdown' },
+        { type: 'sights', select_id: 'sights-filter-select', dropdown_id: 'sights-filter-dropdown' },
+        { type: 'tasks', select_id: 'tasks-filter-select', dropdown_id: 'tasks-filter-dropdown' },
+        { type: 'models', select_id: 'models-filter-select', dropdown_id: 'models-filter-dropdown' },
+        { type: 'hangar', select_id: 'hangar-filter-select', dropdown_id: 'hangar-filter-dropdown' }
+    ];
+};
+
+app.refreshResourceDropdownI18n = function () {
+    this.update_resource_dropdown_language(
+        this.get_resource_sort_dropdown_configs(),
+        this.resource_sort_dropdowns,
+        'resource.sort_label'
+    );
+    this.update_resource_dropdown_language(
+        this.get_resource_filter_dropdown_configs(),
+        this.resource_filter_dropdowns,
+        'resource.filter_label'
+    );
+};
+
+app.refreshResourceStatusBadgeI18n = function () {
+    document.querySelectorAll('.resource-status-badge.is-disabled').forEach((badge) => {
+        badge.textContent = this.t('resource.status_disabled');
+    });
+};
+
+app.updateAllResourceSelectionSummaries = function () {
+    ['skins', 'sights', 'tasks', 'models', 'hangar'].forEach((resource_type) => {
+        this.updateResourceSelectionSummary(resource_type);
+    });
+};
+
+app.initResourceSortDropdowns = function () {
+    if (!window.AppDropdownMenu) return;
+
+    const sort_configs = this.get_resource_sort_dropdown_configs();
 
     this.resource_sort_dropdowns = this.resource_sort_dropdowns || {};
 
@@ -4681,16 +4805,13 @@ app.initResourceSortDropdowns = function () {
         const dropdown_el = document.getElementById(config.dropdown_id);
         if (!select_el || !dropdown_el) return;
 
-        const options = Array.from(select_el.options).map((option) => ({
-            value: option.value,
-            label: option.textContent.trim()
-        }));
+        const options = this.get_resource_select_options(select_el);
 
         const dropdown = new AppDropdownMenu({
             id: `${config.type}-resource-sort`,
             containerId: config.dropdown_id,
             options,
-            placeholder: '排序',
+            placeholder: this.t('resource.sort_label').replace(/:$/, ''),
             size: 'sm',
             width: '108px',
             onChange: (value) => {
@@ -4704,13 +4825,7 @@ app.initResourceSortDropdowns = function () {
     });
 
     /* 筛选下拉菜单初始化 */
-    const filter_configs = [
-        { type: 'skins', select_id: 'skins-filter-select', dropdown_id: 'skins-filter-dropdown' },
-        { type: 'sights', select_id: 'sights-filter-select', dropdown_id: 'sights-filter-dropdown' },
-        { type: 'tasks', select_id: 'tasks-filter-select', dropdown_id: 'tasks-filter-dropdown' },
-        { type: 'models', select_id: 'models-filter-select', dropdown_id: 'models-filter-dropdown' },
-        { type: 'hangar', select_id: 'hangar-filter-select', dropdown_id: 'hangar-filter-dropdown' }
-    ];
+    const filter_configs = this.get_resource_filter_dropdown_configs();
 
     this.resource_filter_dropdowns = this.resource_filter_dropdowns || {};
 
@@ -4719,16 +4834,13 @@ app.initResourceSortDropdowns = function () {
         const dropdown_el = document.getElementById(config.dropdown_id);
         if (!select_el || !dropdown_el) return;
 
-        const options = Array.from(select_el.options).map((option) => ({
-            value: option.value,
-            label: option.textContent.trim()
-        }));
+        const options = this.get_resource_select_options(select_el);
 
         const dropdown = new AppDropdownMenu({
             id: `${config.type}-resource-filter`,
             containerId: config.dropdown_id,
             options,
-            placeholder: '筛选',
+            placeholder: this.t('resource.filter_label').replace(/:$/, ''),
             size: 'sm',
             width: '90px',
             onChange: (value) => {
@@ -4827,8 +4939,16 @@ app.updateResourceSelectionSummary = function (resource_type, total_count) {
     const selected_count = cards.filter((card) => card.classList.contains('is-selected')).length;
     const visible_count = Number.isFinite(Number(total_count)) ? Number(total_count) : cards.length;
 
-    if (count_el) count_el.textContent = `共${visible_count}项`;
-    if (hint_el) hint_el.textContent = selected_count > 0 ? `已选${selected_count}项` : '至少选择1个项目';
+    if (count_el) {
+        const count_key = visible_count === 1 ? 'resource.count_item' : 'resource.count_items';
+        count_el.textContent = this.t(count_key, { count: visible_count });
+    }
+    if (hint_el) {
+        const selected_key = selected_count === 1 ? 'resource.selected_item' : 'resource.selected_items';
+        hint_el.textContent = selected_count > 0
+            ? this.t(selected_key, { count: selected_count })
+            : this.t('resource.min_select_one');
+    }
 
     if (select_all_el) {
         select_all_el.checked = visible_count > 0 && selected_count === visible_count;
@@ -5066,11 +5186,11 @@ app.loadSightsView = function () {
 
     if (this.sightsPath) {
         if (primaryBtn) primaryBtn.onclick = () => app.selectSightsPath();
-        if (primaryText) primaryText.textContent = '手动选择路径';
+        if (primaryText) primaryText.textContent = this.t('tools.manual_select_path');
         if (primaryIcon) primaryIcon.className = 'ri-folder-open-line';
 
         if (secondaryBtn) secondaryBtn.disabled = false;
-        if (secondaryText) secondaryText.textContent = '打开 UserSights';
+        if (secondaryText) secondaryText.textContent = this.t('resource.open_usersights_folder');
 
         setTimeout(() => {
             const camoPage = document.getElementById('page-camo');
@@ -5085,11 +5205,11 @@ app.loadSightsView = function () {
 
     this._sightsLoaded = false;
     if (primaryBtn) primaryBtn.onclick = () => app.selectSightsPath();
-    if (primaryText) primaryText.textContent = '手动选择路径';
+    if (primaryText) primaryText.textContent = this.t('tools.manual_select_path');
     if (primaryIcon) primaryIcon.className = 'ri-folder-open-line';
 
     if (secondaryBtn) secondaryBtn.disabled = true;
-    if (secondaryText) secondaryText.textContent = '打开 UserSights';
+    if (secondaryText) secondaryText.textContent = this.t('resource.open_usersights_folder');
 };
 
 // 刷新 UID 列表
@@ -5099,7 +5219,7 @@ app.refreshSightsUidList = async function () {
 
     if (!window.pywebview?.api?.discover_usersights_paths) {
         if (this.sightsUidDropdown) {
-            this.sightsUidDropdown.setOptions([{ value: '', label: '-- API 未就绪 --' }]);
+            this.sightsUidDropdown.setOptions([{ value: '', label: this.t('resource.uid_api_not_ready') }]);
         }
         return;
     }
@@ -5110,28 +5230,29 @@ app.refreshSightsUidList = async function () {
             this.sightsUidDropdown = new AppDropdownMenu({
                 id: 'sights-uid-select',
                 containerId: 'sights-uid-select-wrapper',
-                placeholder: '-- 搜索中... --',
-                options: [{ value: '', label: '-- 搜索中... --' }],
+                placeholder: this.t('resource.uid_searching'),
+                options: [{ value: '', label: this.t('resource.uid_searching') }],
                 size: 'sm',
                 onChange: (value) => this.onSightsUidChange(value)
             });
         } else {
-            this.sightsUidDropdown.setOptions([{ value: '', label: '-- 搜索中... --' }]);
+            this.sightsUidDropdown.placeholder = this.t('resource.uid_searching');
+            this.sightsUidDropdown.setOptions([{ value: '', label: this.t('resource.uid_searching') }]);
         }
 
         const paths = await pywebview.api.discover_usersights_paths();
         this._sightsUidList = paths || [];
 
         if (this._sightsUidList.length === 0) {
-            this.sightsUidDropdown.setOptions([{ value: '', label: '-- 未找到 UID --' }]);
+            this.sightsUidDropdown.setOptions([{ value: '', label: this.t('resource.uid_not_found') }]);
             return;
         }
 
         // 构建选项
-        const options = [{ value: '', label: '-- 选择 UID --' }];
+        const options = [{ value: '', label: this.t('resource.uid_select_placeholder') }];
         let currentValue = '';
         for (const item of this._sightsUidList) {
-            const status = item.exists ? '✓' : '(新建)';
+            const status = item.exists ? '✓' : this.t('resource.uid_new');
             const label = `${item.uid} ${status}`;
             options.push({ value: item.uid, label: label });
             if (this.sightsPath && this.sightsPath.includes(item.uid)) {
@@ -5146,7 +5267,7 @@ app.refreshSightsUidList = async function () {
     } catch (e) {
         console.error('刷新 UID 列表失败:', e);
         if (this.sightsUidDropdown) {
-            this.sightsUidDropdown.setOptions([{ value: '', label: '-- 搜索失败 --' }]);
+            this.sightsUidDropdown.setOptions([{ value: '', label: this.t('resource.uid_search_failed') }]);
         }
     }
 };
@@ -5398,8 +5519,8 @@ app._renderSightsView = function () {
         listEl.innerHTML = `
             <div class="res-empty-state">
                 <i class="ri-crosshair-line"></i>
-                <h3>${hasQuery ? "没有匹配的炮镜" : this.t('tools.empty_sights')}</h3>
-                <p>${hasQuery ? "换个关键词试试" : this.t('tools.empty_sights_desc')}</p>
+                <h3>${hasQuery ? this.t('resource.no_matching_sights') : this.t('tools.empty_sights')}</h3>
+                <p>${hasQuery ? this.t('resource.try_another_keyword') : this.t('tools.empty_sights_desc')}</p>
             </div>
         `;
         this.updateResourceSelectionSummary('sights', 0);
@@ -5415,6 +5536,7 @@ app._renderSightsView = function () {
         const cover = item.cover_url || placeholder;
         const isDefaultCover = !!item.cover_is_default;
         const safeDisplayName = app._escapeHtml(displayName);
+        const disabledLabel = app._escapeHtml(app.t('resource.status_disabled'));
         const cardTitle = app._escapeHtml(displayName === folderName
             ? String(item.path || "")
             : `${displayName}\n原始文件夹名: ${folderName}\n${item.path || ""}`);
@@ -5423,7 +5545,7 @@ app._renderSightsView = function () {
             <div class="small-card${isDisabled ? ' is-disabled-resource' : ''}" title="${cardTitle}" data-sight-name-encoded="${encodedName}" data-disabled="${isDisabled ? '1' : '0'}">
                 <div class="small-card-img-wrapper" style="position:relative;">
                     <img class="small-card-img${isDefaultCover ? ' is-default-cover' : ''}" src="${cover}" alt="">
-                    ${isDisabled ? '<div class="resource-status-badge is-disabled">已禁用</div>' : ''}
+                    ${isDisabled ? `<div class="resource-status-badge is-disabled">${disabledLabel}</div>` : ''}
                     <div class="skin-edit-overlay">
                         <button class="btn-v2 icon-only small secondary skin-edit-btn"
                                 data-sight-name-encoded="${encodedName}"
@@ -5784,7 +5906,7 @@ app.setupGlobalDragDrop = function () {
     if (!overlay) return;
 
     // 定义允许显示拖放层的页面 (包括首页)
-    const allowedPages = ['page-home', 'page-lib', 'page-camo', 'page-sight'];
+    const allowedPages = ['page-home', 'page-camo', 'page-sight'];
 
     const canShow = () => {
         const activePageEl = document.querySelector('.page.active');
@@ -5810,7 +5932,7 @@ app.setupGlobalDragDrop = function () {
             const textEl = overlay.querySelector('.drop-overlay-text');
             if (activePageEl && textEl) {
                 const id = activePageEl.id;
-                if (id === 'page-lib' || id === 'page-home') {
+                if (id === 'page-home') {
                     textEl.innerText = app.t('drop.import_voice_pack');
                 } else if (id === 'page-camo') {
                     const sightsView = document.getElementById('view-sights');

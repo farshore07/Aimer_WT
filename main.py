@@ -1759,7 +1759,7 @@ class AppApi:
 
     def begin_browser_archive_import(self, target_type, file_name, file_size, import_options=None):
         target = str(target_type or "").strip().lower()
-        if target not in {"skins", "sights"}:
+        if target not in {"skins", "sights", "voice"}:
             return {"success": False, "msg": "拖入目标不支持"}
 
         safe_name = Path(str(file_name or "archive.zip")).name
@@ -1768,9 +1768,13 @@ class AppApi:
             safe_name = "archive.zip"
         suffix = Path(safe_name).suffix.lower()
         allowed_suffixes = {".zip", ".rar", ".7z"}
+        if target == "voice":
+            allowed_suffixes = set(LibraryManager.SUPPORTED_EXTENSIONS)
         if target == "sights":
             allowed_suffixes.add(".blk")
         if suffix not in allowed_suffixes:
+            if target == "voice":
+                return {"success": False, "msg": "当前语音包库不支持该文件格式"}
             if target == "sights":
                 return {"success": False, "msg": "当前仅支持 .blk/.zip/.rar/.7z 炮镜文件"}
             return {"success": False, "msg": "当前仅支持 .zip/.rar/.7z 压缩包"}
@@ -1893,6 +1897,8 @@ class AppApi:
 
         if target == "skins":
             started = self.import_skin_zip_from_path(str(temp_path))
+        elif target == "voice":
+            started = self.import_voice_zip_from_path(str(temp_path))
         elif target == "sights":
             import_options = session.get("import_options")
             if not isinstance(import_options, dict):

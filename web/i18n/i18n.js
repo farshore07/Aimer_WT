@@ -59,6 +59,11 @@
                 if (key) el.title = this.t(key);
             });
 
+            scope.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+                const key = el.getAttribute("data-i18n-aria-label");
+                if (key) el.setAttribute("aria-label", this.t(key));
+            });
+
             scope.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
                 const key = el.getAttribute("data-i18n-placeholder");
                 if (key) el.placeholder = this.t(key);
