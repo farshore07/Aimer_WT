@@ -170,6 +170,8 @@ class _ThemeUnlockFallbackService:
         "beiku.json",
         "lianying.json",
         "chifeng.json",
+        "wuye_fuyin.json",
+        "zqrx_mifuyu.json",
         "supporter.json",
     }
 
@@ -5503,8 +5505,8 @@ class AppApi:
                         {
                             "filename": file.name,
                             "name": meta.get("name", file.stem),
-                            "author": meta.get("author", "Unknown"),
-                            "version": meta.get("version", "1.0"),
+                            "author": meta.get("author", ""),
+                            "version": meta.get("version", ""),
                             "sort_order": sort_order,
                         }
                     )

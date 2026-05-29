@@ -1,4 +1,4 @@
-﻿const DEFAULT_THEME = {
+const DEFAULT_THEME = {
     "--primary": "#FF9900",
     "--primary-hover": "#e68a00",
     "--bg-body": "#F5F7FA",
@@ -433,9 +433,10 @@ const app = {
             const option = document.createElement('div');
             option.className = 'custom-select-option';
             option.dataset.value = theme.filename;
-            const themeLabel = theme.filename === 'supporter.json'
-                ? `${theme.name} - by ${theme.author}`
-                : `${theme.name} (v${theme.version}) - by ${theme.author}`;
+            const hasAuthor = theme.author && theme.author !== 'System';
+            const themeLabel = hasAuthor
+                ? (theme.version ? `${theme.name} (v${theme.version}) - by ${theme.author}` : `${theme.name} - by ${theme.author}`)
+                : theme.name;
             option.textContent = theme.filename === 'default.json'
                 ? this.t('theme.default')
                 : themeLabel;
@@ -463,9 +464,10 @@ const app = {
         const textEl = document.getElementById('theme-select-text');
         const theme = this.themeListData.find(t => t.filename === filename);
         if (textEl && theme) {
-            const themeLabel = filename === 'supporter.json'
-                ? `${theme.name} - by ${theme.author}`
-                : `${theme.name} (v${theme.version}) - by ${theme.author}`;
+            const hasAuthor = theme.author && theme.author !== 'System';
+            const themeLabel = hasAuthor
+                ? (theme.version ? `${theme.name} (v${theme.version}) - by ${theme.author}` : `${theme.name} - by ${theme.author}`)
+                : theme.name;
             textEl.textContent = filename === 'default.json'
                 ? this.t('theme.default')
                 : themeLabel;
