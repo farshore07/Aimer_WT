@@ -11,6 +11,8 @@
  */
 
 const LogCollector = {
+    _initialized: false,
+
     // 日志缓存
     _logs: [],
     
@@ -19,6 +21,11 @@ const LogCollector = {
     
     // 初始化
     init() {
+        if (this._initialized) {
+            return;
+        }
+        this._initialized = true;
+
         // 拦截console方法以捕获日志
         this._interceptConsole();
         
@@ -29,12 +36,14 @@ const LogCollector = {
         this._interceptNetworkRequests();
         
         // 监听来自后端的日志推送
-        if (window.app && window.app.appendLog) {
+        if (window.app && window.app.appendLog && !window.app.appendLog._logCollectorWrapped) {
             const originalAppendLog = window.app.appendLog;
-            window.app.appendLog = (msg) => {
+            const wrappedAppendLog = (msg) => {
                 this._addLog(msg, 'backend');
                 return originalAppendLog.call(window.app, msg);
             };
+            wrappedAppendLog._logCollectorWrapped = true;
+            window.app.appendLog = wrappedAppendLog;
         }
         
         console.log('[AI] 日志收集器已初始化');
@@ -147,26 +156,31 @@ const LogCollector = {
         };
     },
     
-    // 拦截console方法
+    // 拦截console方法（异步化日志处理避免阻塞主线程）
     _interceptConsole() {
         const levels = ['log', 'info', 'warn', 'error', 'debug'];
         
         levels.forEach(level => {
             const original = console[level];
             console[level] = (...args) => {
-                const message = args.map(arg => {
-                    if (typeof arg === 'object') {
-                        try {
-                            return JSON.stringify(arg);
-                        } catch (e) {
-                            return String(arg);
-                        }
-                    }
-                    return String(arg);
-                }).join(' ');
-                
-                this._addLog(message, level);
+                // 先同步调用原始方法
                 original.apply(console, args);
+                // 日志收集异步处理，避免阻塞 UI 线程
+                const capturedArgs = args;
+                const capturedLevel = level;
+                queueMicrotask(() => {
+                    const message = capturedArgs.map(arg => {
+                        if (typeof arg === 'object') {
+                            try {
+                                return JSON.stringify(arg);
+                            } catch (e) {
+                                return String(arg);
+                            }
+                        }
+                        return String(arg);
+                    }).join(' ');
+                    this._addLog(message, capturedLevel);
+                });
             };
         });
     },

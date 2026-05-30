@@ -48,11 +48,58 @@
     function openNoticeDetail(item, app) {
         if (window.NoticeModalModule && typeof window.NoticeModalModule.openNoticeDetail === 'function') {
             window.NoticeModalModule.openNoticeDetail(item);
+            markNoticeRead(item.id);
+            updateUnreadDots();
             return;
         }
         if (app && typeof app.showAlert === 'function') {
             app.showAlert(item && item.title ? item.title : '公告详情', item && item.content ? escapeHtml(item.content) : '', 'info');
+            markNoticeRead(item.id);
+            updateUnreadDots();
         }
+    }
+
+    /* 已读状态管理（localStorage） */
+    var STORAGE_KEY = 'aimer_notice_read_ids';
+
+    function getReadIds() {
+        try {
+            var raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return [];
+            var parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) { return []; }
+    }
+
+    function markNoticeRead(id) {
+        if (!id) return;
+        var ids = getReadIds();
+        var sid = String(id);
+        if (ids.indexOf(sid) === -1) {
+            ids.push(sid);
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(ids)); } catch (e) {}
+        }
+    }
+
+    function isNoticeRead(id) {
+        if (!id) return true;
+        return getReadIds().indexOf(String(id)) >= 0;
+    }
+
+    function updateUnreadDots() {
+        var dots = document.querySelectorAll('.notice-unread-dot');
+        var readIds = getReadIds();
+        dots.forEach(function(dot) {
+            var nid = dot.getAttribute('data-unread-nid');
+            if (nid && readIds.indexOf(nid) >= 0) {
+                dot.classList.add('read');
+                if (typeof dot.remove === 'function') {
+                    dot.remove();
+                } else if (dot.parentNode) {
+                    dot.parentNode.removeChild(dot);
+                }
+            }
+        });
     }
 
     function bindEvents(app) {
@@ -81,26 +128,117 @@
         return [];
     }
 
+    function parseNoticeDateParts(dateStr) {
+        if (!dateStr) return null;
+        var s = String(dateStr).trim();
+        var match = null;
+
+        if (!s) return null;
+        if (s === '今天') {
+            var today = new Date();
+            return { month: today.getMonth() + 1, day: today.getDate() };
+        }
+
+        match = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+        if (match) {
+            return { month: parseInt(match[2], 10), day: parseInt(match[3], 10) };
+        }
+
+        match = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:\s+.*)?$/);
+        if (match) {
+            return { month: parseInt(match[2], 10), day: parseInt(match[3], 10) };
+        }
+
+        match = s.match(/^(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日?$/);
+        if (match) {
+            return { month: parseInt(match[2], 10), day: parseInt(match[3], 10) };
+        }
+
+        match = s.match(/^(\d{1,2})月\s*(\d{1,2})日?$/);
+        if (match) {
+            return { month: parseInt(match[1], 10), day: parseInt(match[2], 10) };
+        }
+
+        match = s.match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
+        if (match) {
+            return { month: parseInt(match[1], 10), day: parseInt(match[2], 10) };
+        }
+
+        return null;
+    }
+
+    /* 将日期文本简化为 M.D 格式（如 "3.16"），用于往期动态列表展示 */
+    function formatShortDate(dateStr) {
+        var parts = parseNoticeDateParts(dateStr);
+        return parts ? (parts.month + '.' + parts.day) : '';
+    }
+
+    /* 绑定往期动态区域滚动指示器 */
+    function bindHistoryScrollIndicators(container) {
+        var history = container.querySelector('.notice-history');
+        if (!history) return;
+        var arrowUp = container.querySelector('.notice-history-arrow-up');
+        var arrowDown = container.querySelector('.notice-history-arrow-down');
+        if (!arrowUp || !arrowDown) return;
+
+        function updateArrows() {
+            var st = history.scrollTop;
+            var sh = history.scrollHeight;
+            var ch = history.clientHeight;
+            var hasOverflow = sh > ch + 2;
+            arrowUp.classList.toggle('visible', hasOverflow && st > 4);
+            arrowDown.classList.toggle('visible', hasOverflow && st + ch < sh - 4);
+        }
+
+        history.addEventListener('scroll', updateArrows, { passive: true });
+        requestAnimationFrame(updateArrows);
+        setTimeout(updateArrows, 200);
+    }
+
     function renderNoticeBoard(app) {
         const container = document.getElementById('notice-board') || document.querySelector('.notice-content');
         if (!container) return;
 
+        const hasRemoteData = !!(app && app._noticeDataSource === 'remote');
         let data = normalizeData(app && Array.isArray(app.noticeData) ? app.noticeData : []);
-        if (!data.length) {
+        if (!data.length && !hasRemoteData) {
             const fallback = normalizeData(getDefaultData());
             if (fallback.length) {
                 data = fallback;
                 if (app) app.noticeData = fallback;
             }
         }
+
+        const connected = !!(app && app.telemetryConnected);
+        const seqId = (app && app.userSeqId) ? app.userSeqId : 0;
+        const footerText = connected
+            ? (seqId ? `已连接服务器 · 用户UID: ${seqId}` : '已连接服务器')
+            : '未连接到服务器';
+        const dotClass = connected ? 'connected' : 'disconnected';
+
         if (!data.length) {
-            container.innerHTML = '';
+            if (app) app._noticeMap = {};
+            container.innerHTML = `
+                <div class="notice-section">
+                    <span class="notice-section-text">其他动态</span>
+                    <span class="notice-section-line"></span>
+                </div>
+                <div class="notice-history-wrap">
+                    <div class="notice-history custom-scrollbar">
+                        <div style="padding: 18px 6px; color: var(--text-muted); font-size: 13px;">暂无公告</div>
+                    </div>
+                </div>
+                <div class="notice-footer" id="notice-server-status" data-connected="${connected ? '1' : '0'}">
+                    <span class="notice-footer-dot ${dotClass}" aria-hidden="true"></span>
+                    <span class="notice-footer-text">${footerText}</span>
+                </div>
+            `;
+            bindEvents(app);
             return;
         }
 
-        const pinned = data.find((item) => item.isPinned) || data[0];
-        const others = data.filter((item) => String(item.id) !== String(pinned.id));
-        const pinnedMeta = getTypeMeta(pinned.type);
+        const pinned = data.find((item) => item.isPinned) || null;
+        const others = pinned ? data.filter((item) => String(item.id) !== String(pinned.id)) : data;
         const map = {};
         data.forEach((item) => {
             map[String(item.id)] = item;
@@ -109,40 +247,58 @@
 
         const listHtml = others.map((item) => {
             const meta = getTypeMeta(item.type);
+            const shortDate = formatShortDate(item.date);
+            var unread = !isNoticeRead(item.id);
+            var unreadDot = unread
+                ? `<span class="notice-unread-dot" data-unread-nid="${escapeHtml(item.id)}"></span>`
+                : '';
             return `
                 <div class="notice-item" data-type="${escapeHtml(item.type)}" data-notice-id="${escapeHtml(item.id)}">
                     <div class="notice-item-main">
+                        ${unreadDot}
                         <span class="notice-tag ${escapeHtml(meta.tagClass)}">${escapeHtml(item.tag)}</span>
                         <span class="notice-item-title">${escapeHtml(item.title)}</span>
                     </div>
+                    ${shortDate ? `<span class="notice-item-date">${escapeHtml(shortDate)}</span>` : ''}
                     <i class="ri-arrow-right-s-line notice-item-arrow"></i>
                 </div>
             `;
         }).join('');
 
-        const pinnedPreview = buildPinnedPreview(pinned);
-        const connected = !!(app && app.telemetryConnected);
-        const seqId = (app && app.userSeqId) ? app.userSeqId : 0;
-        const footerText = connected
-            ? (seqId ? `已连接服务器 · 用户 #${seqId}` : '已连接服务器')
-            : '未连接到服务器';
-        const dotClass = connected ? 'connected' : 'disconnected';
-        container.innerHTML = `
+        let pinnedHtml = '';
+        if (pinned) {
+            const pinnedMeta = getTypeMeta(pinned.type);
+            var decoIcon = pinned.iconClass || pinnedMeta.iconClass;
+            const pinnedPreview = buildPinnedPreview(pinned);
+            var pinnedUnread = !isNoticeRead(pinned.id);
+            var pinnedUnreadDot = pinnedUnread
+                ? `<span class="notice-unread-dot notice-unread-dot-hero" data-unread-nid="${escapeHtml(pinned.id)}"></span>`
+                : '';
+            pinnedHtml = `
             <div class="notice-hero" data-type="${escapeHtml(pinned.type)}" data-notice-id="${escapeHtml(pinned.id)}">
-                <div class="notice-hero-deco"><i class="${escapeHtml(pinnedMeta.iconClass)}"></i></div>
+                <div class="notice-hero-deco"><i class="${escapeHtml(decoIcon)}"></i></div>
                 <div class="notice-hero-top">
+                    ${pinnedUnreadDot}
                     <span class="notice-hero-pin"><i class="ri-pushpin-2-fill"></i> 置顶公告</span>
                     <span class="notice-hero-date">${escapeHtml(pinned.date)}</span>
                 </div>
                 <div class="notice-hero-title">${escapeHtml(pinned.title)}</div>
                 <div class="notice-hero-desc">${escapeHtml(pinnedPreview)}</div>
-            </div>
+            </div>`;
+        }
+
+        container.innerHTML = `
+            ${pinnedHtml}
             <div class="notice-section">
-                <span class="notice-section-text">往期动态</span>
+                <span class="notice-section-text">其他动态</span>
                 <span class="notice-section-line"></span>
             </div>
-            <div class="notice-history custom-scrollbar">
-                ${listHtml}
+            <div class="notice-history-wrap">
+                <div class="notice-history-arrow-up"><i class="ri-arrow-up-s-line"></i></div>
+                <div class="notice-history custom-scrollbar">
+                    ${listHtml}
+                </div>
+                <div class="notice-history-arrow-down"><i class="ri-arrow-down-s-line"></i></div>
             </div>
             <div class="notice-footer" id="notice-server-status" data-connected="${connected ? '1' : '0'}">
                 <span class="notice-footer-dot ${dotClass}" aria-hidden="true"></span>
@@ -151,6 +307,7 @@
         `;
 
         bindEvents(app);
+        bindHistoryScrollIndicators(container);
     }
 
     function updateNoticeBar(contentHtml) {
@@ -174,7 +331,7 @@
         }
         if (text) {
             text.textContent = isConnected
-                ? (seqId ? `已连接服务器 · 用户 #${seqId}` : '已连接服务器')
+                ? (seqId ? `已连接服务器 · 用户UID: ${seqId}` : '已连接服务器')
                 : '未连接到服务器';
         }
     }
@@ -183,6 +340,8 @@
         renderNoticeBoard: renderNoticeBoard,
         updateNoticeBar: updateNoticeBar,
         bindEvents: bindEvents,
-        updateServerStatusFooter: updateServerStatusFooter
+        updateServerStatusFooter: updateServerStatusFooter,
+        markNoticeRead: markNoticeRead,
+        updateUnreadDots: updateUnreadDots
     };
 })();

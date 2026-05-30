@@ -48,8 +48,9 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(1.6px);
+    background:
+        radial-gradient(circle at top left, rgba(255, 153, 0, 0.05), transparent 36%),
+        linear-gradient(180deg, rgba(8, 12, 18, 0.14), rgba(8, 12, 18, 0.26));
     z-index: 9999;
     opacity: 0;
     visibility: hidden;
@@ -302,7 +303,7 @@
     padding-top: 16px;
 }
 
-/* 测试版标签 - 浅色文字 */
+/* 测试版标签 - 浅色文字，限额展开时隐藏 */
 .ai-chat-beta-tag {
     font-size: 12px;
     color: var(--text-sec, #7F8C8D);
@@ -310,6 +311,13 @@
     font-weight: 400;
     letter-spacing: 0.5px;
     pointer-events: auto;
+    transition: opacity 0.25s ease;
+}
+
+.ai-chat-quota:hover ~ .ai-chat-beta-tag,
+.ai-chat-quota.expanded ~ .ai-chat-beta-tag {
+    opacity: 0;
+    pointer-events: none;
 }
 
 /* 消息区域 - 圆角设计 */
@@ -533,6 +541,75 @@
 }
 
 /* 消息中的链接样式 */
+/* Markdown 渲染内容样式 */
+.ai-message-bubble h1,
+.ai-message-bubble h2,
+.ai-message-bubble h3,
+.ai-message-bubble h4 {
+    margin: 8px 0 4px 0;
+    font-weight: 600;
+    line-height: 1.3;
+}
+.ai-message-bubble h1 { font-size: 1.2em; }
+.ai-message-bubble h2 { font-size: 1.1em; }
+.ai-message-bubble h3 { font-size: 1.05em; }
+.ai-message-bubble h4 { font-size: 1em; }
+.ai-message-bubble p {
+    margin: 4px 0;
+    line-height: 1.6;
+}
+.ai-message-bubble ul,
+.ai-message-bubble ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+.ai-message-bubble li {
+    margin: 2px 0;
+    line-height: 1.5;
+}
+.ai-message-bubble blockquote {
+    margin: 6px 0;
+    padding: 4px 10px;
+    border-left: 3px solid var(--primary, #FF9900);
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 4px;
+}
+.ai-message-bubble pre {
+    margin: 6px 0;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.ai-message-bubble code {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9em;
+    padding: 1px 4px;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 3px;
+}
+.ai-message-bubble pre code {
+    padding: 0;
+    background: transparent;
+}
+.ai-message-bubble table {
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 13px;
+}
+.ai-message-bubble th,
+.ai-message-bubble td {
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 4px 8px;
+}
+.ai-message-bubble th {
+    background: rgba(0, 0, 0, 0.04);
+    font-weight: 600;
+}
+.ai-message-bubble > *:first-child { margin-top: 0; }
+.ai-message-bubble > *:last-child { margin-bottom: 0; }
 .ai-message-bubble a {
     color: var(--primary, #FF9900);
     text-decoration: none;
@@ -960,10 +1037,21 @@
     bottom: 0;
     z-index: 10001;
     display: none;
+    opacity: 0;
+}
+
+.ai-disclaimer-modal.show,
+.ai-disclaimer-modal.hiding {
+    display: block;
 }
 
 .ai-disclaimer-modal.show {
-    display: block;
+    animation: ai-disclaimer-fade-in 0.22s ease forwards;
+}
+
+.ai-disclaimer-modal.hiding {
+    pointer-events: none;
+    animation: ai-disclaimer-fade-out 0.18s ease forwards;
 }
 
 .ai-disclaimer-overlay {
@@ -972,12 +1060,22 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
+    background:
+        radial-gradient(circle at top left, rgba(255, 153, 0, 0.08), transparent 42%),
+        linear-gradient(180deg, rgba(8, 12, 18, 0.62), rgba(8, 12, 18, 0.74));
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 20px;
+    overflow: hidden;
+}
+
+.ai-disclaimer-overlay::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at center, rgba(255, 255, 255, 0.03), transparent 58%);
+    pointer-events: none;
 }
 
 .ai-disclaimer-content {
@@ -990,6 +1088,51 @@
     flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     border: 1px solid var(--border-color, #E2E8F0);
+    position: relative;
+    z-index: 1;
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+    will-change: transform, opacity;
+}
+
+.ai-disclaimer-modal.show .ai-disclaimer-content {
+    animation: ai-disclaimer-card-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.ai-disclaimer-modal.hiding .ai-disclaimer-content {
+    animation: ai-disclaimer-card-out 0.16s ease forwards;
+}
+
+@keyframes ai-disclaimer-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes ai-disclaimer-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes ai-disclaimer-card-in {
+    from {
+        opacity: 0;
+        transform: translateY(14px) scale(0.985);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes ai-disclaimer-card-out {
+    from {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(10px) scale(0.985);
+    }
 }
 
 .ai-disclaimer-header {
@@ -1209,4 +1352,122 @@
 
 [data-theme="dark"] .ai-token-count {
     color: var(--primary, #FBBF24);
+}
+
+/* ==================== 服务器总 Token 消耗样式（蓝色系区分） ==================== */
+
+.ai-server-token-display {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.02) 100%);
+    border-color: rgba(59, 130, 246, 0.15);
+}
+
+.ai-server-token-count {
+    color: #3B82F6 !important;
+}
+
+[data-theme="dark"] .ai-server-token-display {
+    background: linear-gradient(135deg, rgba(96, 165, 250, 0.1) 0%, rgba(96, 165, 250, 0.02) 100%);
+    border-color: rgba(96, 165, 250, 0.2);
+}
+
+[data-theme="dark"] .ai-server-token-count {
+    color: #60A5FA !important;
+}
+
+/* ==================== 限额显示样式 ==================== */
+
+.ai-chat-quota {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 14px;
+    background: var(--bg-card, #FFFFFF);
+    color: var(--text-sec, #7F8C8D);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+    border: 1px solid var(--border-color, rgba(0, 0, 0, 0.06));
+    z-index: 60;
+    pointer-events: auto;
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+    white-space: nowrap;
+    cursor: default;
+}
+
+/* compact / full 均使用 max-width + opacity 做过渡动画 */
+.ai-chat-quota .ai-quota-compact,
+.ai-chat-quota .ai-quota-full {
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    transition: max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease;
+}
+
+/* 缩进状态: compact 可见, full 隐藏 */
+.ai-chat-quota .ai-quota-compact {
+    max-width: 120px;
+    opacity: 1;
+    gap: 3px;
+}
+.ai-chat-quota .ai-quota-full {
+    max-width: 0;
+    opacity: 0;
+}
+
+/* 展开状态: full 可见, compact 隐藏 */
+.ai-chat-quota:hover .ai-quota-full,
+.ai-chat-quota.expanded .ai-quota-full {
+    max-width: 220px;
+    opacity: 1;
+    gap: 4px;
+}
+.ai-chat-quota:hover .ai-quota-compact,
+.ai-chat-quota.expanded .ai-quota-compact {
+    max-width: 0;
+    opacity: 0;
+}
+
+.ai-chat-quota i.ri-sparkling-line {
+    font-size: 13px;
+    color: var(--primary, #FF9900);
+    flex-shrink: 0;
+}
+
+/* 永久额度数字 - 跟随主题色，淡化处理 */
+.ai-quota-bonus {
+    color: var(--primary, #FF9900);
+    opacity: 0.75;
+}
+
+/* 缩进态的 + 分隔符 */
+.ai-quota-plus {
+    color: var(--text-sec, #7F8C8D);
+    opacity: 0.5;
+    font-size: 10px;
+}
+
+.ai-chat-quota.low {
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #D97706;
+}
+
+.ai-chat-quota.low i.ri-sparkling-line {
+    color: #D97706;
+}
+
+.ai-chat-quota.empty {
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #DC2626;
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.ai-chat-quota.empty i.ri-sparkling-line {
+    color: #DC2626;
 }

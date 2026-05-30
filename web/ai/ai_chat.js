@@ -29,6 +29,9 @@ const AIChat = {
     
     // 初始化
     init() {
+        if (window.AIManager && typeof window.AIManager.isEnabled === 'function' && !window.AIManager.isEnabled()) {
+            return;
+        }
         this._createDOM();
 
         // 初始化子模块
@@ -87,6 +90,19 @@ const AIChat = {
                         <span id="ai-token-prompt">输入: 0</span>
                         <span class="ai-token-divider">|</span>
                         <span id="ai-token-completion">输出: 0</span>
+                    </div>
+                </div>
+                <div class="ai-chat-setting-item" id="ai-server-token-usage-item" style="display: none;">
+                    <div class="ai-chat-setting-label">
+                        <i class="ri-server-line" style="color: #3B82F6;"></i>
+                        服务器总消耗
+                    </div>
+                    <div class="ai-token-usage-display ai-server-token-display">
+                        <span class="ai-token-count ai-server-token-count" id="ai-server-token-count">--</span>
+                        <span class="ai-token-label">tokens</span>
+                    </div>
+                    <div class="ai-token-detail">
+                        <span id="ai-server-request-count">总请求: --</span>
                     </div>
                 </div>
                 <div id="ai-custom-api-settings" style="display: none;">
@@ -198,6 +214,11 @@ const AIChat = {
             </div>
             
             <div class="ai-chat-header">
+                <div class="ai-chat-quota" id="ai-chat-quota" title="AI 对话次数" style="display: none;">
+                    <i class="ri-sparkling-line"></i>
+                    <span class="ai-quota-compact" id="ai-quota-compact">--</span>
+                    <span class="ai-quota-full" id="ai-quota-full">加载中...</span>
+                </div>
                 <span class="ai-chat-beta-tag">不稳定测试版</span>
             </div>
 
@@ -277,6 +298,9 @@ const AIChat = {
     
     // 绑定Logo点击事件
     _bindLogoClick() {
+        if (window.AIManager && typeof window.AIManager.isEnabled === 'function' && !window.AIManager.isEnabled()) {
+            return;
+        }
         const logo = document.querySelector('.app-logo');
         if (logo) {
             logo.style.cursor = 'pointer';
@@ -368,12 +392,21 @@ const AIChat = {
     
     // 打开聊天框
     open() {
+        if (window.AIManager && typeof window.AIManager.isEnabled === 'function' && !window.AIManager.isEnabled()) {
+            return;
+        }
+        // 防重入：弹窗动画进行中不响应
+        if (this.state._opening) return;
+
         if (typeof AIDisclaimer !== 'undefined' && !AIDisclaimer.state.hasAgreed) {
+            this.state._opening = true;
             AIDisclaimer.show();
             AIDisclaimer.onAgree(() => {
+                this.state._opening = false;
                 this._doOpen();
             });
             AIDisclaimer.onReject(() => {
+                this.state._opening = false;
                 console.log('[AI] 用户拒绝免责声明，关闭AI功能');
             });
             return;
@@ -387,10 +420,102 @@ const AIChat = {
         this.state.isOpen = true;
         this.elements.container.classList.add('open');
         this.elements.overlay.classList.add('show');
+        document.body.classList.add('ai-chat-open');
         document.body.style.overflow = 'hidden';
         
         setTimeout(() => this.elements.input.focus(), 300);
         AIChatMessages.scrollToBottom();
+
+        // Aimer 免费模式时刷新限额显示
+        if (AI_CONFIG.get('apiMode') === 'aimer_free') {
+            this._refreshQuota();
+        } else {
+            // 自定义模式下隐藏限额
+            const quotaEl = document.getElementById('ai-chat-quota');
+            if (quotaEl) quotaEl.style.display = 'none';
+        }
+    },
+
+    // 从服务器获取并刷新限额显示
+    async _refreshQuota() {
+        const quotaEl = document.getElementById('ai-chat-quota');
+        const compactEl = document.getElementById('ai-quota-compact');
+        const fullEl = document.getElementById('ai-quota-full');
+        if (!quotaEl || !compactEl || !fullEl) return;
+
+        const machineId = window._telemetryHWID || '';
+        if (!machineId) {
+            quotaEl.style.display = 'none';
+            return;
+        }
+
+        try {
+            const serverUrl = this._getServerUrl();
+            if (!serverUrl) {
+                compactEl.textContent = '--';
+                fullEl.textContent = '服务未配置';
+                quotaEl.style.display = 'flex';
+                return;
+            }
+            const headers = {
+                'X-AimerWT-Client': '1'
+            };
+            if (window.pywebview?.api?.get_telemetry_auth_headers) {
+                const authHeaders = await window.pywebview.api.get_telemetry_auth_headers('/api/ai/quota', 'GET', machineId);
+                if (authHeaders && typeof authHeaders === 'object') {
+                    Object.assign(headers, authHeaders);
+                }
+            }
+            const resp = await fetch(`${serverUrl}/api/ai/quota?machine_id=${encodeURIComponent(machineId)}`, { headers });
+            if (!resp.ok) throw new Error('请求失败');
+            const data = await resp.json();
+            const dailyRemaining = Math.max(0, Number(data.daily_remaining) || 0);
+            const bonus = Math.max(0, Number(data.bonus_credits) || 0);
+            this._setQuotaDisplay(dailyRemaining, bonus);
+        } catch (e) {
+            compactEl.textContent = '--';
+            fullEl.textContent = '--';
+        }
+    },
+
+    _setQuotaDisplay(dailyRemaining, bonus) {
+        const quotaEl = document.getElementById('ai-chat-quota');
+        const compactEl = document.getElementById('ai-quota-compact');
+        const fullEl = document.getElementById('ai-quota-full');
+        if (!quotaEl || !compactEl || !fullEl) return;
+
+        const daily = Math.max(0, Number(dailyRemaining) || 0);
+        const perm = Math.max(0, Number(bonus) || 0);
+        const total = daily + perm;
+
+        // 缩进态: 15 + 15 或 15
+        if (perm > 0) {
+            compactEl.innerHTML = `${daily} <span class="ai-quota-plus">+</span> <span class="ai-quota-bonus">${perm}</span>`;
+        } else {
+            compactEl.textContent = String(daily);
+        }
+
+        // 展开态: 剩余15次 永久额度15次
+        if (perm > 0) {
+            fullEl.innerHTML = `剩余${daily}次 <span class="ai-quota-bonus">永久额度${perm}次</span>`;
+        } else {
+            fullEl.textContent = `剩余 ${daily} 次`;
+        }
+
+        quotaEl.style.display = 'flex';
+        quotaEl.classList.toggle('low', total <= 3 && total > 0);
+        quotaEl.classList.toggle('empty', total === 0);
+    },
+
+    // 获取后端服务器地址（从 pywebview 注入的全局变量获取）
+    _getServerUrl() {
+        const provider = typeof AIProviderManager !== 'undefined'
+            ? AIProviderManager.getCurrentProvider()
+            : null;
+        if (provider?.name === 'proxy' && provider.serverUrl) {
+            return provider.serverUrl;
+        }
+        return (window._telemetryBaseUrl || '').replace(/\/+$/, '');
     },
     
     // 关闭聊天框
@@ -398,6 +523,7 @@ const AIChat = {
         this.state.isOpen = false;
         this.elements.container.classList.remove('open');
         this.elements.overlay.classList.remove('show');
+        document.body.classList.remove('ai-chat-open');
         document.body.style.overflow = '';
         
         this.state.settingsOpen = false;
@@ -407,6 +533,9 @@ const AIChat = {
     
     // 切换聊天框
     toggle() {
+        if (window.AIManager && typeof window.AIManager.isEnabled === 'function' && !window.AIManager.isEnabled()) {
+            return;
+        }
         if (this.state.isOpen) {
             this.close();
         } else {
@@ -419,8 +548,14 @@ const AIChat = {
         const message = this.elements.input.value.trim();
         if (!message || this.state.isLoading) return;
 
-        // 清空情绪标签缓存
-        this.state.emotionCache = {};
+        // Aimer 免费模式：次数用完时前端拦截
+        if (AI_CONFIG.get('apiMode') === 'aimer_free') {
+            const quotaEl = document.getElementById('ai-chat-quota');
+            if (quotaEl && quotaEl.classList.contains('empty')) {
+                AIChatMessages.addMessage('ai', '对话次数已用完啦~ 每日额度每天 0 点会刷新哦！ε٩(๑> ₃ <)۶з');
+                return;
+            }
+        }
 
         const contextFlags = {
             includeLogs: this.elements.toolLogs.classList.contains('active'),
@@ -456,14 +591,41 @@ const AIChat = {
             if (!validation.valid) {
                 throw new Error(validation.error);
             }
-            
-            const messages = AIContextManager.buildMessages(message, history, options);
+
+            let messages;
+            const streamOptions = {};
+
+            if (provider.name === 'proxy') {
+                // proxy 模式：后端管理 system prompt，客户端只发对话消息和上下文
+                messages = [...history, { role: 'user', content: message }];
+                const context = {};
+                if (options.includeTutorial) {
+                    const pageCtx = typeof TutorialDetector !== 'undefined' ? TutorialDetector.getContextForAI() : '';
+                    if (pageCtx) context.page = pageCtx;
+                }
+                if (options.includeLogs) {
+                    const logLines = AI_CONFIG.getNested('context.logContextLines') || 30;
+                    const logs = typeof LogCollector !== 'undefined' ? LogCollector.getFormattedLogs(logLines) : '';
+                    if (logs && logs !== '暂无日志记录。') context.logs = logs;
+                }
+                streamOptions.context = context;
+            } else {
+                // 其他提供商：客户端构建完整消息（含本地 system prompt）
+                messages = AIContextManager.buildMessages(message, history, options);
+            }
             
             let responseContent = '';
+            let streamError = null;
+            let finalUsage = null;
             await provider.chatStream(messages, (chunk) => {
                 if (chunk.error) {
-                    throw new Error(chunk.error);
+                    streamError = new Error(chunk.error);
+                    return;
                 }
+                if (typeof chunk.quotaRemaining === 'number') {
+                    this._refreshQuota();
+                }
+                if (chunk.usage) finalUsage = chunk.usage;
                 if (chunk.done) {
                     return;
                 }
@@ -471,20 +633,45 @@ const AIChat = {
                     responseContent += chunk.content;
                     AIChatMessages.updateStreamingMessage(responseContent);
                 }
-            });
+            }, streamOptions);
+
+            if (streamError) {
+                throw streamError;
+            }
+
+            if (!responseContent.trim()) {
+                responseContent = 'AI 暂时没有返回可显示的内容，请稍后再试。';
+            }
             
             AIChatMessages.finalizeMessage(responseContent);
 
             const aiTokens = AIChatMessages.estimateTokens(responseContent);
-            AIChatMessages.updateTokens(userTokens, aiTokens);
+            const promptTokens = Number(finalUsage?.prompt ?? 0) || userTokens;
+            const completionTokens = Number(finalUsage?.completion ?? 0) || aiTokens;
+            AIChatMessages.updateTokens(promptTokens, completionTokens);
+
+            // 发送完成后刷新限额显示
+            if (AI_CONFIG.get('apiMode') === 'aimer_free') {
+                this._refreshQuota();
+            }
 
         } catch (error) {
             console.error('[AI] 请求失败:', error);
+            const partialContent = String(this.state.currentStream?.content || '').trim();
             AIChatMessages.hideLoading();
             this.state.isLoading = false;
-            setTimeout(() => {
-                AIChatMessages.addMessage('ai', `抱歉，请求失败：${error.message}`);
-            }, 300);
+            if (partialContent) {
+                AIChatMessages.finalizeMessage(`${partialContent}\n\n回复中断：${error.message}`);
+            } else {
+                setTimeout(() => {
+                    AIChatMessages.addMessage('ai', `抱歉，请求失败：${error.message}`);
+                }, 300);
+            }
+
+            // 失败（含被限流）后也刷新限额
+            if (AI_CONFIG.get('apiMode') === 'aimer_free') {
+                this._refreshQuota();
+            }
         }
     }
 };

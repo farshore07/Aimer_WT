@@ -3,6 +3,7 @@
 import argparse
 import base64
 import csv
+import copy
 import hashlib
 import itertools
 import json
@@ -17,6 +18,8 @@ import time
 import platform
 import subprocess
 import zipfile
+
+import requests
 
 # ==================== 控制台编码设置（已移至 utils.logger）====================
 # 详细逻辑请参考 utils/logger.py 中的 _setup_console_encoding 函数
@@ -42,7 +45,21 @@ from services.hangar_manager import HangarManager
 from services.bank_preview_service import BankPreviewService
 from services.tray_manager import tray_manager
 from services.autostart_manager import autostart_manager
-from services.telemetry_manager import init_telemetry, get_hwid, get_telemetry_connection_status, get_user_seq_id, submit_feedback
+from services.telemetry_manager import (
+    build_client_auth_headers,
+    get_client_device_token,
+    get_hwid,
+    get_telemetry_connection_status,
+    get_telemetry_manager,
+    get_user_seq_id,
+    init_telemetry,
+    resolve_related_endpoint,
+    resolve_client_auth_secret,
+    resolve_service_base_url,
+    set_client_device_token,
+    submit_feedback,
+)
+from utils.utils import get_docs_data_dir
 try:
     from services.theme_unlock import ThemeUnlockService
 except Exception:
@@ -65,7 +82,7 @@ from wt.wt_text import (
 )
 
 APP_VERSION = "3.0.0"
-AGREEMENT_VERSION = "2026-01-10"
+AGREEMENT_VERSION = "2026-05-29-v3-beta"
 DEFAULT_PENDING_DIR_NAME = "待解压区"
 DEFAULT_RESOURCE_ROOT_DIR_NAME = "AimerWT资源库"
 DEFAULT_VOICE_LIBRARY_DIR_NAME = "WT语音包库"
@@ -78,33 +95,145 @@ else:
 WEB_DIR = BASE_DIR / "web"
 
 log = get_logger(__name__)
+DIAGNOSTIC_TOOL_DIR = BASE_DIR / "OTHER" / "诊断工具"
+DIAGNOSTIC_LOG_PATH = DIAGNOSTIC_TOOL_DIR / "diagnostic_events.jsonl"
+_diagnostic_recorder = None
+_diagnostic_recorder_checked = False
+_diagnostic_logger_attached = False
+
+
+def _load_diagnostic_recorder():
+    tool_file = DIAGNOSTIC_TOOL_DIR / "diagnostic_recorder.py"
+    try:
+        if not tool_file.is_file():
+            return None
+    except OSError:
+        log.debug("诊断记录器路径不可用，已跳过加载", exc_info=True)
+        return None
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("aimerwt_diagnostic_recorder", tool_file)
+        if not spec or not spec.loader:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.create_recorder(DIAGNOSTIC_LOG_PATH, max_records=200)
+    except Exception:
+        log.debug("加载诊断记录器失败", exc_info=True)
+        return None
+
+
+def _get_diagnostic_recorder():
+    global _diagnostic_recorder, _diagnostic_recorder_checked
+    if not _diagnostic_recorder_checked:
+        _diagnostic_recorder_checked = True
+        _diagnostic_recorder = _load_diagnostic_recorder()
+    return _diagnostic_recorder
+
+
+def _attach_diagnostic_logger():
+    global _diagnostic_logger_attached
+    if _diagnostic_logger_attached:
+        return
+    recorder = _get_diagnostic_recorder()
+    if not recorder:
+        return
+    try:
+        recorder.attach_logger(setup_logger())
+        _diagnostic_logger_attached = True
+    except Exception:
+        log.debug("挂载诊断日志处理器失败", exc_info=True)
+
+
+def record_diagnostic_event(category, event, level="info", message="", **data):
+    recorder = _get_diagnostic_recorder()
+    if not recorder:
+        return
+    try:
+        recorder.record(category, event, level, message, **data)
+    except Exception:
+        pass
 
 
 class _ThemeUnlockFallbackService:
     """GitHub 公开版缺少口令模块时的降级实现。"""
 
+    _public_theme_files = {
+        "default.json",
+        "dark.json",
+        "aimer.json",
+        "pink.json",
+    }
+    _hidden_theme_files = {
+        "bi_an.json",
+        "beiku.json",
+        "lianying.json",
+        "chifeng.json",
+        "wuye_fuyin.json",
+        "zqrx_mifuyu.json",
+        "supporter.json",
+    }
+
     def __init__(self, config_manager):
         self._cfg_mgr = config_manager
 
+    @staticmethod
+    def _normalize_filename(filename: str) -> str:
+        return str(filename or "").strip()
+
     def is_hidden_theme(self, filename: str) -> bool:
-        return False
+        return self._normalize_filename(filename) in self._hidden_theme_files
 
     def is_theme_accessible(self, filename: str) -> bool:
-        return True
+        filename = self._normalize_filename(filename)
+        if filename in self._public_theme_files:
+            return True
+        if filename in self._hidden_theme_files:
+            return filename in set(self._cfg_mgr.get_unlocked_themes())
+        return False
 
     def filter_theme_list(self, theme_list: list[dict]) -> list[dict]:
-        return theme_list
+        return [item for item in theme_list if self.is_theme_accessible(item.get("filename"))]
 
     def get_accessible_active_theme(self, filename: str) -> str:
-        filename = str(filename or "default.json")
+        filename = self._normalize_filename(filename) or "default.json"
         theme_path = WEB_DIR / "themes" / filename
-        return filename if theme_path.exists() else "default.json"
+        return filename if theme_path.exists() and self.is_theme_accessible(filename) else "default.json"
 
     def redeem_theme_code(self, code: str) -> dict:
         return {"success": False, "message": "GitHub版本不支持，请使用分发版本。"}
 
+    def unlock_theme_by_name(self, filename: str) -> dict:
+        filename = self._normalize_filename(filename)
+        if not filename:
+            return {"success": False, "message": "缺少主题文件名"}
+
+        if filename not in self._hidden_theme_files:
+            return {"success": False, "message": f"主题 {filename} 不在隐藏主题列表中"}
+
+        theme_path = WEB_DIR / "themes" / filename
+        if not theme_path.exists():
+            return {"success": False, "message": f"主题文件不存在: {filename}"}
+
+        unlocked = set(self._cfg_mgr.get_unlocked_themes())
+        already_unlocked = filename in unlocked
+        if not already_unlocked:
+            unlocked.add(filename)
+            valid = [name for name in self._hidden_theme_files if name in unlocked]
+            self._cfg_mgr.set_unlocked_themes(valid)
+
+        return {
+            "success": True,
+            "already_unlocked": already_unlocked,
+            "theme_file": filename,
+            "message": "主题已可用",
+        }
+
     def reset_unlocked_themes(self) -> bool:
-        return self._cfg_mgr.set_unlocked_themes([])
+        unlocked = set(self._cfg_mgr.get_unlocked_themes())
+        preserved = [name for name in self._hidden_theme_files if name == "supporter.json" and name in unlocked]
+        return self._cfg_mgr.set_unlocked_themes(preserved)
 
 
 def _is_localization_blk_modified_for_export(lang_dir: Path) -> bool:
@@ -168,7 +297,7 @@ def _show_fatal_error(title: str, message: str) -> None:
 
 
 def _install_global_exception_handlers() -> None:
-    """将未捕捉例外统一写入 app.log，避免只有 console 报错。"""
+    """将未捕获异常统一写入 app.log，避免只有 console 报错。"""
 
     def _excepthook(exc_type, exc, tb):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -177,27 +306,27 @@ def _install_global_exception_handlers() -> None:
 
         try:
             fatal_log = get_logger("fatal")
-            fatal_log.critical("未捕捉例外", exc_info=(exc_type, exc, tb))
+            fatal_log.critical("未捕获异常", exc_info=(exc_type, exc, tb))
         except Exception:
             pass
 
         _show_fatal_error(
             "Aimer WT 发生错误",
-            f"程式遇到未处理的错误而终止。\n\n"
+            f"程序遇到未处理的错误而终止。\n\n"
             f"{exc_type.__name__}: {exc}\n\n"
-            f"详细资讯请查看 logs/app.log",
+            f"详细信息请查看 logs/app.log",
         )
 
     sys.excepthook = _excepthook
 
-    # Python 3.8+：捕捉 thread 未处理例外
+    # Python 3.8+：捕获 thread 未处理异常
     if hasattr(threading, "excepthook"):
 
         def _thread_excepthook(args):
             try:
                 th_log = get_logger("thread")
                 th_log.critical(
-                    "背景执行绪未捕捉例外: %s (%s)",
+                    "后台线程未捕获异常: %s (%s)",
                     getattr(args.thread, "name", "<unknown>"),
                     getattr(args.thread, "ident", "?"),
                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
@@ -241,14 +370,36 @@ def _windows_has_webview2_runtime() -> bool:
     return False
 
 
-def _open_url(url: str) -> None:
-    if sys.platform != "win32":
-        return
+def _open_url(url: str) -> bool:
     try:
-        # 使用系统预设浏览器
-        subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        if sys.platform == "win32":
+            # 使用系统预设浏览器 / 协议处理器
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            return True
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+            return True
+        subprocess.Popen(["xdg-open", url])
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _launch_detached(args, *, cwd: str | None = None) -> None:
+    """尽量以非阻塞、与宿主解耦的方式启动外部进程。"""
+    popen_kwargs = {
+        "cwd": cwd or None,
+        "shell": False,
+    }
+
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+        popen_kwargs["close_fds"] = False
+
+    subprocess.Popen(args, **popen_kwargs)
 
 
 def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -278,6 +429,9 @@ class AppApi:
         self._lock = threading.Lock()
 
         self._logger = setup_logger()
+        _attach_diagnostic_logger()
+        record_diagnostic_event("app", "api_init", "info", "AppApi 初始化")
+        self._client_diagnostic_log_path = self._initialize_client_diagnostic_log()
 
         self._perf_enabled = bool(perf_enabled)
 
@@ -288,6 +442,7 @@ class AppApi:
 
         # _window 为私有变量，避免 pywebview 扫描序列化窗口对象导致递归错误
         self._window = None
+        self._latest_server_config = None
 
         # 管理器实例：配置、语音包库、涂装、炮镜、游戏目录操作
         # 注意：所有管理器现在统一使用 logger.py 的日誌系统
@@ -317,23 +472,14 @@ class AppApi:
         self._audition_scan_lock = threading.Lock()
 
         # ========== 本地测试配置 ==========
-        # 设置为 True 启用本地遥测测试（连接 localhost:8080）
+        # 设置为 True 启用本地遥测测试（连接 localhost:8082）
         # 正常上线时设置为 False，使用正式服务器
-        LOCAL_TELEMETRY_TEST = False
+        self._local_telemetry_test = False
         # ==================================
 
         # 初始化遥测系统
-        if self._cfg_mgr.get_telemetry_enabled():
-            if LOCAL_TELEMETRY_TEST:
-                # 本地测试模式：连接本地服务器
-                tm = init_telemetry(APP_VERSION, "http://localhost:8080/telemetry")
-                self._logger.info("[遥测] 本地测试模式已启用，连接 localhost:8080")
-            else:
-                # 正式模式：使用默认服务器
-                tm = init_telemetry(APP_VERSION)
-            tm.set_server_message_callback(self.on_server_message)
-            tm.set_user_command_callback(self.on_user_command)
-            tm.set_log_callback(self._logger)
+        self._is_dev_mode = False
+        self._initialize_telemetry()
 
         self._search_running = False
         self._is_busy = False
@@ -341,6 +487,8 @@ class AppApi:
         self._password_lock = threading.Lock()
         self._password_value = None
         self._password_cancelled = False
+        self._browser_import_lock = threading.Lock()
+        self._browser_import_sessions = {}
 
         # 遥测消息去重
         self._last_alert_content = None  # 紧急通知 (弹窗)
@@ -350,10 +498,508 @@ class AppApi:
         self._last_announce_content = None  # 兼容以前的 key (可选)
         self._last_ad_carousel_state = None  # 广告轮播配置去重
         self._last_notice_items_state = None  # 公告列表配置去重
+        self._last_user_feature_state = None  # 用户功能开关去重
+        self._last_system_notifications_state = None  # 系统通知列表去重
 
-    def on_server_message(self, config: dict):
-        """处理服务端下发的系统消息（公告/更新/维护）"""
+        # 服务器数据缓存文件路径
+        self._server_cache_file = Path(self._cfg_mgr.config_dir) / "server_cache.json"
+
+    def _get_client_diagnostic_log_path(self) -> Path:
+        log_dir = get_docs_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / "AimerWT-Log.log"
+
+    def _initialize_client_diagnostic_log(self) -> Path:
+        path = self._get_client_diagnostic_log_path()
+        try:
+            if not path.exists() or path.stat().st_size == 0:
+                path.write_text(
+                    "AimerWT-Log 自动诊断日志\n"
+                    f"启动时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    "说明: 该文件会在前端启动后自动持续写入，便于排查白屏等问题。\n\n",
+                    encoding="utf-8",
+                )
+            else:
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n\n[App Boot] {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self._logger.info(f"AimerWT-Log 已初始化: {path}")
+        except Exception as e:
+            self._logger.warning(f"AimerWT-Log 初始化失败: {e}")
+        return path
+
+    def _safe_i18n_params(self, params=None):
+        safe = {}
+        if not isinstance(params, dict):
+            return safe
+        for key, value in params.items():
+            name = str(key)
+            if value is None or isinstance(value, (str, int, float, bool)):
+                safe[name] = "" if value is None else value
+            else:
+                safe[name] = str(value)
+        return safe
+
+    def _i18n_payload(self, key, params=None):
+        return {"key": str(key), "params": self._safe_i18n_params(params or {})}
+
+    def _coerce_i18n_payload(self, value):
+        if isinstance(value, dict):
+            key = value.get("key") or value.get("i18n_key")
+            if not key:
+                return None
+            params = value.get("params")
+            if params is None:
+                params = value.get("i18n_params")
+            return self._i18n_payload(key, params or {})
+        return None
+
+    def _match_i18n_patterns(self, text, patterns):
+        for pattern, key in patterns:
+            match = re.match(pattern, text)
+            if not match:
+                continue
+            params = match.groupdict()
+            for name, value in list(params.items()):
+                if isinstance(value, str) and value.isdigit():
+                    params[name] = int(value)
+            return self._i18n_payload(key, params)
+        return None
+
+    def _runtime_loading_i18n_payload(self, message):
+        payload = self._coerce_i18n_payload(message)
+        if payload:
+            return payload
+
+        text = str(message or "").strip()
+        if not text:
+            return None
+
+        static_map = {
+            "正在准备导入...": "loading.import.prepare",
+            "开始扫描待解压区...": "loading.import.scan_pending",
+            "导入完成": "loading.import.done",
+            "导入失败": "loading.import.failed",
+            "跳过重复文件": "loading.import.skip_duplicate",
+            "没有文件": "loading.common.no_files",
+            "全部完成": "loading.common.all_done",
+            "解压完成": "loading.archive.extract_done",
+            "完成整理": "loading.archive.organize_done",
+            "扫描待安装文件...": "loading.install.scan_files",
+            "未选择文件": "loading.install.no_selection",
+            "安装失败：无文件成功复制": "loading.install.failed_no_copied",
+            "更新游戏配置...": "loading.install.update_config",
+            "安装完成": "loading.install.done",
+            "安装失败": "loading.install.failed",
+            "涂装导入完成": "loading.skin.import_done",
+            "涂装导入失败": "loading.skin.import_failed",
+            "炮镜安装完成": "loading.sight.install_done",
+            "炮镜压缩包已导入": "loading.sight.archive_import_done",
+            "炮镜导入完成": "loading.sight.import_done",
+            "炮镜导入失败": "loading.sight.import_failed",
+            "正在解析语音包...": "loading.audition.parsing_pack",
+        }
+        key = static_map.get(text)
+        if key:
+            return self._i18n_payload(key)
+
+        patterns = [
+            (r"^准备导入: (?P<name>.+)$", "loading.import.prepare_named"),
+            (r"^正在读取: (?P<name>.+)$", "loading.import.reading"),
+            (r"^开始解压: (?P<name>.+)$", "loading.archive.start_extract"),
+            (r"^解压完成: (?P<name>.+)$", "loading.archive.extract_done_named"),
+            (r"^解压中: (?P<name>.+)$", "loading.archive.extracting_file"),
+            (r"^跳过: (?P<name>.+)$", "loading.import.skip_named"),
+            (r"^涂装解压: (?P<name>.+)$", "loading.skin.extracting_named"),
+            (r"^准备解压到 UserSkins: (?P<name>.+)$", "loading.skin.prepare_extract_to_userskins"),
+            (r"^炮镜安装: (?P<name>.+)$", "loading.sight.installing_named"),
+            (r"^炮镜解压: (?P<name>.+)$", "loading.sight.extracting_named"),
+            (r"^准备安装炮镜: (?P<name>.+)$", "loading.sight.prepare_install"),
+            (r"^已安装炮镜文件: (?P<name>.+)$", "loading.sight.file_installed"),
+            (r"^准备解压到 UserSights: (?P<name>.+)$", "loading.sight.prepare_extract_to_usersights"),
+            (r"^准备安装: (?P<name>.+)$", "loading.install.prepare_named"),
+            (r"^共 (?P<count>\d+) 个文件待安装$", "loading.install.file_count"),
+            (r"^(?:复制|複製): (?P<name>.+)$", "loading.install.copying_file"),
+            (r"^安装完成，但有 (?P<count>\d+) 个文件复制失败$", "loading.install.done_with_failed_files"),
+            (r"^安装失败：(?P<count>\d+) 个文件复制失败$", "loading.install.failed_file_count"),
+            (r"^安装失败：(?P<reason>.+)$", "loading.install.failed_with_reason"),
+            (r"^正在扫描 (?P<name>.+) \((?P<current>\d+)/(?P<total>\d+)\)$", "loading.audition.scanning_file"),
+            (r"^解析完成，共 (?P<count>\d+) 个分类$", "loading.audition.category_done"),
+            (r"^解析完成，共 (?P<count>\d+) 条语音$", "loading.audition.voice_done"),
+        ]
+        return self._match_i18n_patterns(text, patterns)
+
+    def _runtime_log_i18n_payload(self, message, record=None):
+        extra_payload = None
+        if record is not None:
+            extra_payload = self._coerce_i18n_payload({
+                "key": getattr(record, "i18n_key", None),
+                "params": getattr(record, "i18n_params", None),
+            })
+        if extra_payload:
+            return extra_payload
+
+        text = str(message or "").strip()
+        if not text:
+            return None
+
+        static_map = {
+            "[ERROR] 无法启动游戏：路径无效": "log.game.path_invalid",
+            "[INFO] 正在通过 Steam 启动 War Thunder ...": "log.game.launch_steam",
+            "[ERROR] 未找到游戏可执行文件 (launcher.exe / aces.exe)": "log.game.executable_not_found",
+            "[SYS] 遥测服务已启用": "log.settings.telemetry_enabled",
+            "[SYS] 遥测服务已停用": "log.settings.telemetry_disabled",
+            "[SYS] 设置开机自启动失败": "log.settings.autostart_failed",
+            "[SYS] 窗口已最小化到托盘": "log.window.minimized_to_tray",
+            "[SYS] 用户请求退出程序": "log.window.exit_requested",
+            "[WARN] 已拦截格式异常的外部链接": "log.link.malformed",
+            "[WARN] 已拦截格式异常的邮件链接": "log.link.mail_malformed",
+            "[SUCCESS] 自动搜索成功，路径已保存。": "log.search.success",
+            "深度扫描未发现游戏客户端。": "log.search.not_found",
+            "另一个任务正在进行中，请稍候...": "log.common.busy",
+            "已取消输入密码，导入已终止": "log.import.password_cancelled",
+            "游戏路径无效或未设置": "log.path.game_invalid_or_unset",
+            "未设置有效游戏路径，无法打开 UserSkins": "log.path.userskins_unset",
+            "未设置有效游戏路径，无法打开 UserMissions": "log.path.usermissions_unset",
+            "请先设置有效的 UserSights 路径": "log.sight.usersights_unset",
+            "[INIT] 创建 mod 文件夹...": "log.install.create_mod_folder",
+            "[MERGE] 检测到 mod 文件夹，准备覆盖安装...": "log.install.merge_existing",
+            "[COPY] 正在複製选中文件夹的内容...": "log.install.copy_selected",
+            "未选择任何文件夹，跳过安装。": "log.install.no_selection",
+            "未找到任何可安装的文件。": "log.install.no_files",
+            "所有文件复制均失败，安装未生效": "log.install.no_file_copied",
+            "已更新安装清单记录": "log.install.manifest_updated",
+            "安装失败：未设置有效游戏路径": "log.install.failed_game_path",
+        }
+        state_map = {
+            "[SYS] 开机自启动已开启": "log.settings.autostart_enabled",
+            "[SYS] 开机自启动已关闭": "log.settings.autostart_disabled",
+            "[SYS] 托盘模式已开启": "log.settings.tray_enabled",
+            "[SYS] 托盘模式已关闭": "log.settings.tray_disabled",
+            "[SYS] 关闭确认提示已开启": "log.settings.close_confirm_enabled",
+            "[SYS] 关闭确认提示已关闭": "log.settings.close_confirm_disabled",
+        }
+        key = state_map.get(text) or static_map.get(text)
+        if key:
+            return self._i18n_payload(key)
+
+        patterns = [
+            (r"^\[INIT] 已加载配置路径: (?P<path>.+)$", "log.path.loaded"),
+            (r"^配置路径失效: (?P<path>.+)$", "log.path.invalid"),
+            (r"^炮镜路径失效: (?P<message>.+)$", "log.sight.path_invalid"),
+            (r"^\[SUCCESS] 手动加载路径: (?P<path>.+)$", "log.path.manual_loaded"),
+            (r"^路径无效: (?P<message>.+)$", "log.path.invalid_reason"),
+            (r"^\[WARN] Steam 启动失败: (?P<message>.+)，尝试使用启动器\.\.\.$", "log.game.steam_failed_fallback"),
+            (r"^\[INFO] 正在启动游戏: (?P<name>.+) \.\.\.$", "log.game.launch_executable"),
+            (r"^\[ERROR] 启动失败: (?P<message>.+)$", "log.game.launch_failed"),
+            (r"^\[ERROR] start_game 发生未处理异常: (?P<message>.+)$", "log.game.unhandled_error"),
+            (r"^\[SYS] 最小化到托盘失败: (?P<message>.+)$", "log.window.minimize_to_tray_failed"),
+            (r"^\[WARN] 已拦截不支持的外部链接协议: (?P<scheme>.+)$", "log.link.unsupported_protocol"),
+            (r"^\[ERROR] 外部链接校验失败: (?P<message>.+)$", "log.link.validation_failed"),
+            (r"^\[ERROR] 无法打开链接: (?P<message>.+)$", "log.link.open_failed"),
+            (r"^\[INSTALL] 准备安装: (?P<name>.+)$", "log.install.prepare"),
+            (r"^已成功安装 (?P<total>\d+) 个文件，失败 (?P<failed>\d+) 个$", "log.install.summary"),
+            (r"^\[SUCCESS] \[DONE] 安装完成！本次覆盖/新增 (?P<total>\d+) 个文件。$", "log.install.done_summary"),
+            (r"^安装过程错误: (?P<message>.+)$", "log.install.process_error"),
+            (r"^安装过程严重错误: (?P<kind>[^:]+): (?P<message>.+)$", "log.install.process_critical"),
+            (r"^安装失败: (?P<message>.+)$", "log.install.failed_with_reason"),
+            (r"^未设置有效游戏路径: (?P<message>.+)$", "log.path.game_invalid_with_reason"),
+            (r"^导入失败: (?P<message>.+)$", "log.import.failed"),
+            (r"^涂装导入成功: (?P<path>.+)$", "log.skin.import_success"),
+            (r"^涂装导入失败: (?P<message>.+)$", "log.skin.import_failed"),
+            (r"^炮镜导入成功: (?P<path>.+)$", "log.sight.import_success"),
+            (r"^炮镜导入失败: (?P<message>.+)$", "log.sight.import_failed"),
+        ]
+        return self._match_i18n_patterns(text, patterns)
+
+    def _log_prefix(self, formatted_message, raw_message):
+        raw = str(raw_message or "")
+        formatted = str(formatted_message or "")
+        if raw and formatted.endswith(raw):
+            return formatted[:-len(raw)]
+        return ""
+
+    def _call_app_method(self, func_name, *args):
         if not self._window:
+            return False
+        js_args = ", ".join(json.dumps(arg, ensure_ascii=True) for arg in args)
+        self._window.evaluate_js(
+            f"if(window.app && app.{func_name}) app.{func_name}({js_args})"
+        )
+        return True
+
+    def _call_loading_method(self, func_name, *args):
+        if not self._window:
+            return False
+        js_args = ", ".join(json.dumps(arg, ensure_ascii=True) for arg in args)
+        self._window.evaluate_js(
+            f"if(window.MinimalistLoading && MinimalistLoading.{func_name}) MinimalistLoading.{func_name}({js_args})"
+        )
+        return True
+
+    def _show_loading_i18n(self, key, params=None, auto_simulate=False):
+        return self._call_loading_method("showKey", bool(auto_simulate), str(key), self._safe_i18n_params(params or {}))
+
+    def _update_loading_i18n(self, progress, key, params=None):
+        safe_progress = max(0, min(100, int(progress)))
+        return self._call_loading_method("updateKey", safe_progress, str(key), self._safe_i18n_params(params or {}))
+
+    def _resolve_telemetry_target_url(self):
+        """解析当前应连接的遥测地址，并同步开发模式状态。"""
+        dev_mode_file = Path(__file__).parent / ".dev_mode"
+        dev_url = None
+        if dev_mode_file.exists():
+            try:
+                raw = dev_mode_file.read_text(encoding="utf-8").strip()
+                if raw.startswith("{"):
+                    data = json.loads(raw)
+                    dev_url = data.get("url", "")
+                    dev_secret = data.get("client_secret", "")
+                    if dev_secret:
+                        os.environ["TELEMETRY_CLIENT_SECRET"] = dev_secret
+                else:
+                    dev_url = raw
+            except Exception:
+                dev_url = None
+
+        self._is_dev_mode = False
+        if dev_url:
+            self._is_dev_mode = True
+            return dev_url, f"[遥测] 开发模式已启用，连接 {dev_url}"
+
+        if self._local_telemetry_test:
+            self._is_dev_mode = True
+            return "http://localhost:8082/telemetry", "[遥测] 本地测试模式已启用，连接 localhost:8082"
+
+        return None, None
+
+    def _initialize_telemetry(self):
+        """初始化遥测实例，并在绑定回调后补拉一次当前配置。"""
+        if not self._cfg_mgr.get_telemetry_enabled():
+            return None
+
+        telemetry_url, telemetry_message = self._resolve_telemetry_target_url()
+        telemetry_manager = init_telemetry(APP_VERSION, telemetry_url, autostart=False)
+        self._bind_telemetry_callbacks(telemetry_manager)
+
+        # 回调必须先绑定，再启动首次上报，避免 pending_command 被服务端清掉后客户端却没接住。
+        telemetry_manager.stop()
+        telemetry_manager.start_heartbeat_loop()
+        telemetry_manager.report_startup()
+
+        if telemetry_message:
+            self._logger.info(telemetry_message)
+        return telemetry_manager
+
+    def _bind_telemetry_callbacks(self, telemetry_manager):
+        telemetry_manager.set_server_message_callback(self.on_server_message)
+        telemetry_manager.set_user_command_callback(self.on_user_command)
+        telemetry_manager.set_log_callback(self._logger)
+
+    def _build_notice_items_apply_js(self, notice_items):
+        items_json = json.dumps(notice_items, ensure_ascii=False)
+        return (
+            "(function(){"
+            f"var items={items_json};"
+            "function apply(){"
+            "if(!window.app) return false;"
+            "window.app.noticeData = items;"
+            "window.app._noticeDataSource = 'remote';"
+            "if(window.NoticeBoardModule && typeof window.NoticeBoardModule.renderNoticeBoard === 'function') {"
+            "window.NoticeBoardModule.renderNoticeBoard(window.app);"
+            "}"
+            "return true;"
+            "}"
+            "if(apply()) return;"
+            "var attempts = 0;"
+            "var timer = window.setInterval(function(){"
+            "attempts += 1;"
+            "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+            "}, 300);"
+            "})();"
+        )
+
+    def _build_ad_carousel_apply_js(self, ad_items, ad_interval_ms):
+        items_json = json.dumps(ad_items, ensure_ascii=False)
+        interval_clause = ""
+        if isinstance(ad_interval_ms, int) and ad_interval_ms > 0:
+            interval_clause = f"window.AIMER_AD_CAROUSEL_CONFIG.autoPlayIntervalMs = {ad_interval_ms};"
+        return (
+            "(function(){"
+            f"var items={items_json};"
+            "function apply(){"
+            "if(!window.AIMER_AD_CAROUSEL_CONFIG) return false;"
+            "window.AIMER_AD_CAROUSEL_CONFIG.items = items;"
+            f"{interval_clause}"
+            "if(window.AdCarouselModule && typeof window.AdCarouselModule.refresh === 'function') {"
+            "window.AdCarouselModule.refresh();"
+            "}"
+            "return true;"
+            "}"
+            "if(apply()) return;"
+            "var attempts = 0;"
+            "var timer = window.setInterval(function(){"
+            "attempts += 1;"
+            "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+            "}, 300);"
+            "})();"
+        )
+
+    def _build_header_banner_apply_js(self, banner_items, banner_interval):
+        items_json = json.dumps(banner_items, ensure_ascii=False)
+        interval_clause = ""
+        if isinstance(banner_interval, int) and banner_interval > 0:
+            interval_clause = (
+                "if(window.HeaderBannerModule && window.HeaderBannerModule._setInterval) "
+                f"window.HeaderBannerModule._setInterval({banner_interval * 1000});"
+            )
+        return (
+            "(function(){"
+            f"var items={items_json};"
+            "function apply(){"
+            "if(!window.HeaderBannerModule) return false;"
+            "window.HeaderBannerModule.clearAnnouncement();"
+            f"{interval_clause}"
+            "items.forEach(function(item){"
+            "if(!item || !item.text) return;"
+            "window.HeaderBannerModule.pushAnnouncement(item.text, item.action || null, true);"
+            "});"
+            "return true;"
+            "}"
+            "if(apply()) return;"
+            "var attempts = 0;"
+            "var timer = window.setInterval(function(){"
+            "attempts += 1;"
+            "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+            "}, 300);"
+            "})();"
+        )
+
+    def _normalize_banner_payload(self, config: dict):
+        raw_items = config.get("banner_items", [])
+        raw_interval = config.get("banner_interval", 6)
+
+        banner_interval = 6
+        if isinstance(raw_interval, (int, float)) and not isinstance(raw_interval, bool):
+            banner_interval = int(raw_interval) if int(raw_interval) > 0 else 6
+
+        if not isinstance(raw_items, list):
+            raw_items = []
+
+        # 兼容旧的单条 notice 配置
+        if not raw_items:
+            notice_text = config.get("notice_content", "") or config.get("content", "")
+            if notice_text:
+                action_type = config.get("notice_action_type", "none")
+                item = {"type": "announcement", "text": notice_text, "icon": "ri-megaphone-line"}
+                if action_type == "url":
+                    item["action"] = {"type": "url", "url": config.get("notice_action_url", "")}
+                elif action_type == "alert":
+                    item["action"] = {
+                        "type": "alert",
+                        "title": config.get("notice_action_title", "系统公告"),
+                        "content": config.get("notice_action_content", notice_text),
+                        "level": "info"
+                    }
+                raw_items = [item]
+
+        normalized_items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "") or "").strip()
+            if not text:
+                continue
+
+            action_obj = dict(item.get("action")) if isinstance(item.get("action"), dict) else None
+            if not action_obj:
+                action_type = str(item.get("action_type", "none") or "none").strip().lower()
+                if action_type == "url" and item.get("action_url"):
+                    action_obj = {"type": "url", "url": item.get("action_url", "")}
+                elif action_type == "alert":
+                    action_obj = {
+                        "type": "alert",
+                        "title": item.get("action_title", "系统公告"),
+                        "content": item.get("action_content", text),
+                        "level": "info"
+                    }
+
+            tracking_type = str(item.get("tracking_type", "none") or "none").strip().lower()
+            if tracking_type not in ("activity", "ad"):
+                tracking_type = "none"
+            tracking_id = str(item.get("tracking_id", "") or "").strip()[:64]
+            if tracking_type == "none":
+                tracking_id = ""
+            if action_obj and tracking_type in ("activity", "ad") and tracking_id:
+                action_obj["tracking"] = {"type": tracking_type, "id": tracking_id}
+
+            normalized_item = {
+                "type": str(item.get("type", "announcement") or "announcement"),
+                "text": text,
+                "icon": str(item.get("icon", "ri-megaphone-line") or "ri-megaphone-line"),
+                "tracking_type": tracking_type,
+                "tracking_id": tracking_id,
+            }
+            if action_obj:
+                normalized_item["action"] = action_obj
+            normalized_items.append(normalized_item)
+
+        return normalized_items, banner_interval
+
+    def _schedule_server_config_replay(self, delays=(0.8, 2.0, 4.0)):
+        """在首页脚本陆续就绪后重放最近一次服务端配置。"""
+        if not self._window or not isinstance(self._latest_server_config, dict):
+            return
+
+        latest_config = copy.deepcopy(self._latest_server_config)
+
+        def _replay():
+            for delay in delays:
+                time.sleep(delay)
+                if not self._window:
+                    return
+                try:
+                    self._apply_server_message(copy.deepcopy(latest_config), force=True)
+                except Exception:
+                    log.debug("重放服务端配置失败", exc_info=True)
+
+        threading.Thread(target=_replay, name="ServerConfigReplay", daemon=True).start()
+
+    def _extract_user_feature_flags(self, config=None) -> dict:
+        defaults = {
+            "badge_system_enabled": False,
+            "nickname_change_enabled": False,
+            "avatar_upload_enabled": False,
+            "notice_comment_enabled": False,
+            "notice_reaction_enabled": False,
+            "redeem_code_enabled": True,
+            "feedback_enabled": True,
+            "user_profile_enabled": False,
+            "ai_assistant_enabled": False,
+            "notification_center_enabled": False,
+        }
+        basic_release_locks = {
+            "badge_system_enabled": False,
+            "nickname_change_enabled": False,
+            "avatar_upload_enabled": False,
+            "notice_comment_enabled": False,
+            "notice_reaction_enabled": False,
+            "user_profile_enabled": False,
+            "ai_assistant_enabled": False,
+            "notification_center_enabled": False,
+        }
+        if not isinstance(config, dict):
+            return defaults
+
+        result = dict(defaults)
+        for key in list(defaults.keys()):
+            if key in config:
+                result[key] = bool(config.get(key))
+        result.update(basic_release_locks)
+        return result
+
+    def _apply_server_message(self, config: dict, force: bool = False):
+        """将服务端配置应用到当前窗口。"""
+        if not self._window or not isinstance(config, dict):
             return
 
         def safe_js_call(func_name, *args):
@@ -362,12 +1008,19 @@ class AppApi:
             return f"if(window.app && app.{func_name}) app.{func_name}({js_args})"
 
         try:
+            # 0. 用户功能开关（优先注入，让设置页和公告弹窗及时响应）
+            feature_flags = self._extract_user_feature_flags(config)
+            feature_state = json.dumps(feature_flags, ensure_ascii=False, sort_keys=True)
+            if force or self._last_user_feature_state != feature_state:
+                self._window.evaluate_js(safe_js_call("applyServerUserFeatures", feature_flags))
+                self._last_user_feature_state = feature_state
+
             # 1. 维护模式处理 (状态发生变化时才提示)
             is_maint = config.get("maintenance", False)
             maint_msg = config.get("maintenance_msg", "")
             maint_key = f"{is_maint}:{maint_msg}"
 
-            if is_maint and (self._last_maintenance_status != maint_key):
+            if is_maint and (force or self._last_maintenance_status != maint_key):
                 self._logger.warning(f"[SYS] ⚠️ 维护模式已开启: {maint_msg}")
                 self._window.evaluate_js(safe_js_call("showWarnToast", "维护模式已开启", maint_msg, 8000))
 
@@ -379,7 +1032,7 @@ class AppApi:
                 content = config.get("alert_content", "")
                 full_alert_key = f"{title}|{content}"
 
-                if content and (self._last_alert_content != full_alert_key):
+                if content and (force or self._last_alert_content != full_alert_key):
                     self._logger.info(f"[通知] {title}")
                     self._window.evaluate_js(safe_js_call("showAlert", title, content, "info"))
                     self._window.evaluate_js(
@@ -389,88 +1042,34 @@ class AppApi:
 
             # 3. Header Banner 信息带推送 (notice 通道，支持多条 banner_items)
             if config.get("notice_active"):
-                banner_items = config.get("banner_items", [])
-                banner_interval = config.get("banner_interval", 6)
-
-                # 兼容旧的单条模式
-                if not banner_items:
-                    notice_text = config.get("notice_content", "") or config.get("content", "")
-                    if notice_text:
-                        action_type = config.get("notice_action_type", "none")
-                        item = {"type": "announcement", "text": notice_text, "icon": "ri-megaphone-line"}
-                        if action_type == "url":
-                            item["action"] = {"type": "url", "url": config.get("notice_action_url", "")}
-                        elif action_type == "alert":
-                            item["action"] = {
-                                "type": "alert",
-                                "title": config.get("notice_action_title", "系统公告"),
-                                "content": config.get("notice_action_content", notice_text),
-                                "level": "info"
-                            }
-                        banner_items = [item]
-
-                # 构建 notice_key 判断是否变化
-                notice_key = json.dumps(banner_items, ensure_ascii=False, sort_keys=True)
-                if banner_items and (self._last_notice_content != notice_key):
-                    # 先清除旧的 announcement 和 slogan
-                    self._window.evaluate_js(
-                        "if(window.HeaderBannerModule) HeaderBannerModule.clearAnnouncement()"
-                    )
-
-                    # 注入轮播间隔
-                    if banner_interval and banner_interval != 6:
-                        self._window.evaluate_js(
-                            f"(function(){{ var m=window.HeaderBannerModule; if(m && m._setInterval) m._setInterval({int(banner_interval) * 1000}); }})()"
-                        )
-
-                    # 逐条注入 banner items
-                    for item in banner_items:
-                        text = item.get("text", "")
-                        if not text:
-                            continue
-
-                        # 构建 action 对象
-                        action_obj = None
-                        action_type = item.get("action_type", "none")
-                        if action_type == "url" and item.get("action_url"):
-                            action_obj = {"type": "url", "url": item["action_url"]}
-                        elif action_type == "alert":
-                            action_obj = {
-                                "type": "alert",
-                                "title": item.get("action_title", "系统公告"),
-                                "content": item.get("action_content", text),
-                                "level": "info"
-                            }
-                        # 注入已有 action 属性（兼容旧格式）
-                        if not action_obj and item.get("action"):
-                            action_obj = item["action"]
-
-                        text_json = json.dumps(text, ensure_ascii=False)
-                        if action_obj:
-                            action_json = json.dumps(action_obj, ensure_ascii=False)
-                            self._window.evaluate_js(
-                                f"if(window.HeaderBannerModule) HeaderBannerModule.pushAnnouncement({text_json}, {action_json})"
-                            )
-                        else:
-                            self._window.evaluate_js(
-                                f"if(window.HeaderBannerModule) HeaderBannerModule.pushAnnouncement({text_json})"
-                            )
+                banner_items, banner_interval = self._normalize_banner_payload(config)
+                notice_key = json.dumps({
+                    "items": banner_items,
+                    "interval": banner_interval,
+                }, ensure_ascii=False, sort_keys=True)
+                if force or self._last_notice_content != notice_key:
+                    self._window.evaluate_js(self._build_header_banner_apply_js(banner_items, banner_interval))
                     self._last_notice_content = notice_key
-            else:
-                # notice 通道关闭时清除 Banner
-                if self._last_notice_content is not None:
-                    self._window.evaluate_js(
-                        "if(window.HeaderBannerModule) HeaderBannerModule.clearAnnouncement()"
+                    self._save_server_cache(
+                        banner_payload={
+                            "items": banner_items,
+                            "interval": banner_interval,
+                        }
                     )
-                    self._last_notice_content = None
+            else:
+                empty_notice_key = json.dumps({"items": [], "interval": 6}, ensure_ascii=False, sort_keys=True)
+                if force or self._last_notice_content != empty_notice_key:
+                    self._window.evaluate_js(self._build_header_banner_apply_js([], 6))
+                    self._last_notice_content = empty_notice_key
+                    self._save_server_cache(banner_payload={"items": [], "interval": 6})
 
-            # 4. 更新提示 (内容变化时才提示)
+            # 4. 更新提示（纯内存去重：激活时每次启动弹一次，会话内不重复）
             if config.get("update_active"):
                 content = config.get("update_content", "")
                 update_url = config.get("update_url", "")
 
                 update_key = f"{content}|{update_url}"
-                if content and (self._last_update_content != update_key):
+                if content and (force or self._last_update_content != update_key):
                     self._logger.info(f"[更新] {content}")
                     self._window.evaluate_js(safe_js_call("showAlert", "发现新版本", content, "success", update_url))
                     self._window.evaluate_js(
@@ -478,7 +1077,7 @@ class AppApi:
                     )
                     self._last_update_content = update_key
 
-            # 5. 广告轮播远程覆盖 (服务端配置了广告数据时覆盖客户端本地配置)
+            # 5. 广告轮播远程覆盖
             ad_items = config.get("ad_carousel_items")
             ad_interval_ms = config.get("ad_carousel_interval_ms")
             if isinstance(ad_items, list):
@@ -486,29 +1085,40 @@ class AppApi:
                     "items": ad_items,
                     "interval_ms": ad_interval_ms,
                 }, ensure_ascii=False, sort_keys=True)
-                if self._last_ad_carousel_state != ad_state:
-                    js_parts = []
-                    if isinstance(ad_items, list):
-                        js_parts.append(
-                            f"window.AIMER_AD_CAROUSEL_CONFIG.items = {json.dumps(ad_items, ensure_ascii=False)}"
-                        )
-                    if isinstance(ad_interval_ms, int) and ad_interval_ms > 0:
-                        js_parts.append(f"window.AIMER_AD_CAROUSEL_CONFIG.autoPlayIntervalMs = {ad_interval_ms}")
-                    js_parts.append(
-                        "if(window.AdCarouselModule && typeof window.AdCarouselModule.refresh === 'function') "
-                        "{ window.AdCarouselModule.refresh(); }"
-                    )
-                    self._window.evaluate_js(
-                        "if(window.AIMER_AD_CAROUSEL_CONFIG) { " + "; ".join(js_parts) + "; }"
-                    )
+                if force or self._last_ad_carousel_state != ad_state:
+                    self._window.evaluate_js(self._build_ad_carousel_apply_js(ad_items, ad_interval_ms))
                     self._last_ad_carousel_state = ad_state
+                    self._save_server_cache(ad_carousel={"items": ad_items, "interval_ms": ad_interval_ms})
 
-            # 6. 公告列表远程覆盖 (服务端有公告数据时覆盖客户端本地 noticeData)
+            # 5.5 信息库广告位远程覆盖
+            kb_ads = config.get("knowledge_ads_items")
+            if isinstance(kb_ads, dict) and isinstance(kb_ads.get("items"), list):
+                kb_json = json.dumps(kb_ads, ensure_ascii=False)
+                self._window.evaluate_js(
+                    "(function(){"
+                    f"var cfg={kb_json};"
+                    "function apply(){"
+                    "if(!window.AIMER_KNOWLEDGE_ADS_CONFIG) return false;"
+                    "window.AIMER_KNOWLEDGE_ADS_CONFIG.items = cfg.items || [];"
+                    "if(window.KnowledgeAdsModule && typeof window.KnowledgeAdsModule.refresh === 'function') {"
+                    "window.KnowledgeAdsModule.refresh();"
+                    "}"
+                    "return true;"
+                    "}"
+                    "if(apply()) return;"
+                    "var attempts = 0;"
+                    "var timer = window.setInterval(function(){"
+                    "attempts += 1;"
+                    "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+                    "}, 300);"
+                    "})();"
+                )
+
+            # 6. 公告列表远程覆盖
             notice_items = config.get("notice_items")
             if isinstance(notice_items, list):
                 notice_state = json.dumps(notice_items, ensure_ascii=False, sort_keys=True)
-                if self._last_notice_items_state != notice_state:
-                    # 将后端字段名 is_pinned 转为前端字段名 isPinned
+                if force or self._last_notice_items_state != notice_state:
                     mapped = []
                     for item in notice_items:
                         mapped.append({
@@ -519,17 +1129,62 @@ class AppApi:
                             "date": item.get("date", ""),
                             "summary": item.get("summary", ""),
                             "content": item.get("content", ""),
-                            "isPinned": item.get("is_pinned", False)
+                            "isPinned": item.get("is_pinned", False),
+                            "iconClass": item.get("icon_class", "")
                         })
-                    items_json = json.dumps(mapped, ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.app) {{ app.noticeData = {items_json}; "
-                        f"if(window.NoticeBoardModule) NoticeBoardModule.renderNoticeBoard(app); }}"
-                    )
+                    self._window.evaluate_js(self._build_notice_items_apply_js(mapped))
                     self._last_notice_items_state = notice_state
+                    self._save_server_cache(notice_items=mapped)
+
+            # 6.5 公告表情反应摘要注入
+            notice_reactions = config.get("notice_reactions")
+            if isinstance(notice_reactions, list):
+                reactions_json = json.dumps(notice_reactions, ensure_ascii=False)
+                self._window.evaluate_js(
+                    f"(function(){{ window._noticeReactionsData = {reactions_json}; }})()"
+                )
+
+            # 7. 项目状态远程控制
+            project_status = config.get("project_status", "")
+            project_last_update = config.get("project_last_update", "")
+            status_map = {
+                "active": {"class": "active", "text": "活跃开发中"},
+                "warning": {"class": "warning", "text": "维护更新中"},
+                "danger": {"class": "danger", "text": "暂停维护"},
+            }
+            if project_status and project_status in status_map:
+                s = status_map[project_status]
+                self._window.evaluate_js(
+                    f"(function(){{ var b=document.getElementById('project-status-badge');"
+                    f"if(b){{ b.className='status-badge {s['class']}'; b.textContent={json.dumps(s['text'], ensure_ascii=False)}; }} }})()"
+                )
+            if project_last_update:
+                self._window.evaluate_js(
+                    f"(function(){{ var el=document.getElementById('project-last-update');"
+                    f"if(el) el.textContent={json.dumps(project_last_update, ensure_ascii=False)}; }})()"
+                )
+
+            # 8. 系统通知消息（推送到铃铛模块）
+            system_notifications = config.get("system_notifications")
+            if isinstance(system_notifications, list):
+                notif_state = json.dumps(system_notifications, ensure_ascii=False, sort_keys=True)
+                last_notif_state = getattr(self, "_last_system_notifications_state", None)
+                notif_json = json.dumps(system_notifications, ensure_ascii=False)
+                if system_notifications and notif_state != last_notif_state:
+                    self._window.evaluate_js(
+                        f"if(window.NotificationBellModule) "
+                        f"window.NotificationBellModule.pushSystemMessages({notif_json})"
+                    )
+                self._last_system_notifications_state = notif_state
 
         except Exception as e:
             print(f"消息处理异常: {e}")
+
+    def on_server_message(self, config: dict):
+        """处理服务端下发的系统消息（公告/更新/维护）"""
+        if isinstance(config, dict):
+            self._latest_server_config = copy.deepcopy(config)
+        self._apply_server_message(config)
 
     def on_user_command(self, cmd_json: str):
         """处理针对当前用户的特定指令驱动"""
@@ -553,6 +1208,39 @@ class AppApi:
             elif cmd_type == "toast":
                 self._logger.info(f"[CMD] 收到管理员信息: {msg}")
                 self._window.evaluate_js(safe_js_call("showWarnToast", "管理员消息", msg, 5000))
+            elif cmd_type == "unlock_theme":
+                theme_file = cmd.get("theme_file", "")
+                if theme_file and self._theme_unlock:
+                    result = self._theme_unlock.unlock_theme_by_name(theme_file)
+                    if result.get("success"):
+                        self._logger.info(f"[CMD] 主题已解锁: {theme_file}")
+                        self._window.evaluate_js("if(window.app && app.loadThemeList) app.loadThemeList()")
+                        self._window.evaluate_js(safe_js_call("showAlert", "🎉 感谢支持", "开发者已赠送您支持者专属主题，您可在设置中切换使用，感谢您的支持！", "success"))
+            elif cmd_type == "redeem_result":
+                success = cmd.get("success", False)
+                title = cmd.get("title", "兑换结果")
+                message = cmd.get("message", "")
+                if success:
+                    self._logger.info(f"[CMD] 兑换成功: {message}")
+                    # 如果包含主题解锁，刷新主题列表
+                    if cmd.get("theme_unlocked"):
+                        theme_file = cmd.get("theme_file", "")
+                        if theme_file and self._theme_unlock:
+                            self._theme_unlock.unlock_theme_by_name(theme_file)
+                        self._window.evaluate_js("if(window.app && app.loadThemeList) app.loadThemeList()")
+                    self._window.evaluate_js(safe_js_call("showAlert", title, message, "success"))
+                else:
+                    self._window.evaluate_js(safe_js_call("showAlert", title, message, "error"))
+            elif cmd_type == "interaction_notification":
+                action = cmd.get("action", "")
+                data = cmd.get("data", {})
+                if isinstance(data, dict) and action:
+                    data["action"] = action
+                    data_json = json.dumps(data, ensure_ascii=False)
+                    self._window.evaluate_js(
+                        f"if(window.NotificationBellModule) "
+                        f"window.NotificationBellModule.pushInteractionMessage({data_json})"
+                    )
 
         except Exception as e:
             print(f"专用指令解析异常: {e}")
@@ -560,6 +1248,86 @@ class AppApi:
     def set_window(self, window):
         # 绑定 PyWebview Window 实例到桥接层，供后续 API 调用使用。
         self._window = window
+        # 注入上次服务器数据缓存，填补启动到首次服务器响应之间的空档
+        self._inject_server_cache()
+        # 重放最近一次服务器配置，覆盖窗口和首页脚本尚未就绪的时机差。
+        self._schedule_server_config_replay()
+
+    def _save_server_cache(self, notice_items=None, ad_carousel=None, banner_payload=None):
+        """将服务器下发的公告/广告数据持久化到本地缓存文件（开发模式跳过）"""
+        if getattr(self, '_is_dev_mode', False):
+            return
+        try:
+            cache = self._load_server_cache()
+            if notice_items is not None:
+                cache["notice_items"] = notice_items
+            if ad_carousel is not None:
+                cache["ad_carousel"] = ad_carousel
+            if banner_payload is not None:
+                cache["banner_payload"] = banner_payload
+            cache_file = self._server_cache_file
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix('.tmp')
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(cache, f, ensure_ascii=False)
+            tmp.replace(cache_file)
+        except Exception as e:
+            log.debug(f"保存服务器缓存失败: {e}")
+
+    def _load_server_cache(self):
+        """读取本地缓存的服务器数据"""
+        try:
+            if self._server_cache_file.exists():
+                with open(self._server_cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            log.debug(f"读取服务器缓存失败: {e}")
+        return {}
+
+    def _inject_server_cache(self):
+        """启动时从本地缓存注入公告/广告数据到前端（开发模式跳过）"""
+        if getattr(self, '_is_dev_mode', False):
+            return
+        if not self._window:
+            return
+
+        def _do_inject():
+            import time
+            time.sleep(0.8)
+            if not self._window:
+                return
+            try:
+                cache = self._load_server_cache()
+
+                # 注入缓存的公告数据
+                cached_notices = cache.get("notice_items")
+                if isinstance(cached_notices, list):
+                    self._window.evaluate_js(self._build_notice_items_apply_js(cached_notices))
+                    log.debug(f"[缓存] 已注入 {len(cached_notices)} 条缓存公告")
+
+                # 注入缓存的广告轮播数据
+                cached_ad = cache.get("ad_carousel")
+                if isinstance(cached_ad, dict):
+                    ad_items = cached_ad.get("items")
+                    ad_interval = cached_ad.get("interval_ms")
+                    if isinstance(ad_items, list):
+                        self._window.evaluate_js(self._build_ad_carousel_apply_js(ad_items, ad_interval))
+                        log.debug(f"[缓存] 已注入 {len(ad_items)} 条缓存广告")
+
+                cached_banner = cache.get("banner_payload")
+                if isinstance(cached_banner, dict):
+                    banner_items = cached_banner.get("items")
+                    banner_interval = cached_banner.get("interval")
+                    if isinstance(banner_items, list):
+                        self._window.evaluate_js(self._build_header_banner_apply_js(banner_items, banner_interval))
+                        log.debug(f"[缓存] 已注入 {len(banner_items)} 条缓存横幅公告")
+            except Exception as e:
+                log.debug(f"注入服务器缓存失败: {e}")
+
+        t = threading.Thread(target=_do_inject, name="ServerCacheInject", daemon=True)
+        t.start()
 
     def _load_json_with_fallback(self, file_path):
         # 按编码回退策略读取 JSON 文件并解析为 Python 对象。
@@ -580,11 +1348,36 @@ class AppApi:
         if not self._window:
             return
 
+        msg_content = ""
+        custom_tag = None
+        append_payload = None
+        log_level = getattr(record, "levelname", "INFO")
+
+        try:
+            msg_content = record.getMessage()
+            match = re.search(r"^\s*\[(SUCCESS|WARN|ERROR|INFO|SYS)]", msg_content)
+            custom_tag = match.group(1) if match else None
+            append_payload = self._runtime_log_i18n_payload(msg_content, record)
+            if custom_tag:
+                log_level = custom_tag
+        except Exception:
+            append_payload = None
+
         # 1. 追加日志到面板
         try:
-            safe_msg = formatted_message.replace("\r", "").replace("\n", "<br>")
-            msg_js = json.dumps(safe_msg, ensure_ascii=True)
-            self._window.evaluate_js(f"if(window.app && app.appendLog) app.appendLog({msg_js})")
+            if append_payload:
+                prefix = self._log_prefix(formatted_message, msg_content)
+                self._call_app_method(
+                    "appendI18nLog",
+                    log_level,
+                    append_payload["key"],
+                    append_payload["params"],
+                    prefix,
+                )
+            else:
+                safe_msg = formatted_message.replace("\r", "").replace("\n", "<br>")
+                msg_js = json.dumps(safe_msg, ensure_ascii=True)
+                self._window.evaluate_js(f"if(window.app && app.appendLog) app.appendLog({msg_js})")
         except Exception:
             # 避免在日志回调中抛异常导致业务中断
             log.exception("日志推送失败")
@@ -593,13 +1386,9 @@ class AppApi:
 
         try:
             level_key = record.levelname  # INFO, WARNING, ERROR, DEBUG
-            msg_content = record.getMessage()
 
             # 兼容：从消息内容解析 [SUCCESS] / [WARN] / [ERROR] 等标签
             # 如果消息里显式写了 [SUCCESS]，我们认为它是 SUCCESS 级别
-            import re
-            match = re.search(r"^\s*\[(SUCCESS|WARN|ERROR|INFO|SYS)]", msg_content)
-            custom_tag = match.group(1) if match else None
 
             # 映射到前端 Toast 类型
             toast_level = None
@@ -617,15 +1406,23 @@ class AppApi:
 
             # 如果有对应的 Toast 级别，则推送
             if toast_level:
-                # 去除换行
-                msg_plain = msg_content.replace("\r", " ").replace("\n", " ")
-                # 去除可能的标签前缀 (可选，保留也无妨，前端只是显示文本)
-                # msg_plain = re.sub(r"^\s*\[(SUCCESS|WARN|ERROR|INFO|SYS)\]\s*", "", msg_plain)
+                if append_payload:
+                    self._call_app_method(
+                        "notifyToastI18n",
+                        toast_level,
+                        append_payload["key"],
+                        append_payload["params"],
+                    )
+                else:
+                    # 去除换行
+                    msg_plain = msg_content.replace("\r", " ").replace("\n", " ")
+                    # 去除可能的标签前缀 (可选，保留也无妨，前端只是显示文本)
+                    # msg_plain = re.sub(r"^\s*\[(SUCCESS|WARN|ERROR|INFO|SYS)\]\s*", "", msg_plain)
 
-                msg_plain_js = json.dumps(msg_plain, ensure_ascii=True)
-                level_js = json.dumps(toast_level, ensure_ascii=True)
-                self._window.evaluate_js(
-                    f"if(window.app && app.notifyToast) app.notifyToast({level_js}, {msg_plain_js})")
+                    msg_plain_js = json.dumps(msg_plain, ensure_ascii=True)
+                    level_js = json.dumps(toast_level, ensure_ascii=True)
+                    self._window.evaluate_js(
+                        f"if(window.app && app.notifyToast) app.notifyToast({level_js}, {msg_plain_js})")
 
         except Exception:
             pass
@@ -675,6 +1472,17 @@ class AppApi:
         self._window.destroy()
 
     # --- 核心业务 API (供 JS 调用) ---
+    def _log_init_path_state(self, path, is_valid):
+        path_log_key = ("valid" if is_valid else "invalid", str(path or ""))
+        if getattr(self, "_init_path_log_key", None) == path_log_key:
+            return
+
+        if is_valid:
+            log.info(f"[INIT] 已加载配置路径: {path}")
+        else:
+            log.warning(f"配置路径失效: {path}")
+        self._init_path_log_key = path_log_key
+
     def init_app_state(self):
         # 汇总并返回前端初始化所需状态，包括配置中的路径、主题、当前语音包与炮镜路径。
         path = self._cfg_mgr.get_game_path()
@@ -686,22 +1494,27 @@ class AppApi:
         is_valid = False
         if path:
             is_valid, _ = self._logic.validate_game_path(path)
-            if is_valid:
-                log.info(f"[INIT] 已加载配置路径: {path}")
-            else:
-                log.warning(f"配置路径失效: {path}")
+            self._log_init_path_state(path, is_valid)
 
         if sights_path:
-            try:
-                self._sights_mgr.set_usersights_path(sights_path)
-            except Exception as e:
-                log.warning(f"炮镜路径失效: {e}")
-                sights_path = ""
-                self._cfg_mgr.set_sights_path("")
+            current = self._sights_mgr.get_usersights_path()
+            if not current or str(current) != sights_path:
+                try:
+                    self._sights_mgr.set_usersights_path(sights_path)
+                except Exception as e:
+                    log.warning(f"炮镜路径失效: {e}")
+                    sights_path = ""
+                    self._cfg_mgr.set_sights_path("")
 
         active_theme = self._theme_unlock.get_accessible_active_theme(self._cfg_mgr.get_active_theme())
         if active_theme != self._cfg_mgr.get_active_theme():
             self._cfg_mgr.set_active_theme(active_theme)
+
+        # 从遥测地址提取基地址（如 http://localhost:8082/telemetry → http://localhost:8082）
+        telemetry_base_url = ""
+        tm = get_telemetry_manager()
+        if tm and tm.report_url:
+            telemetry_base_url = resolve_service_base_url(tm.report_url)
 
         return {
             "game_path": path,
@@ -714,11 +1527,57 @@ class AppApi:
             "hwid": get_hwid(),
             "telemetry_enabled": self._cfg_mgr.get_telemetry_enabled(),
             "telemetry_connected": get_telemetry_connection_status(),
+            "telemetry_base_url": telemetry_base_url,
+            "server_user_features": self._extract_user_feature_flags(self._latest_server_config),
             "user_seq_id": get_user_seq_id(),
             "autostart_enabled": self._cfg_mgr.get_autostart_enabled(),
             "tray_mode": self._cfg_mgr.get_tray_mode(),
-            "close_confirm": self._cfg_mgr.get_close_confirm()
+            "close_confirm": self._cfg_mgr.get_close_confirm(),
+            "ui_language": self._cfg_mgr.get_ui_language()
         }
+
+    def ensure_telemetry_ready(self, timeout_ms=2500):
+        """
+        尝试主动完成一次遥测握手，确保前端后续访问受保护的公告评论/互动接口时，
+        已经具备 base_url、hwid 与设备令牌。
+        """
+        try:
+            timeout_ms = int(timeout_ms or 0)
+        except Exception:
+            timeout_ms = 2500
+        timeout_ms = max(0, min(timeout_ms, 8000))
+
+        tm = get_telemetry_manager()
+        base_state = self.init_app_state()
+        requires_device_token = bool(resolve_client_auth_secret())
+
+        def _build_state():
+            state = self.init_app_state()
+            has_device_token = bool(get_client_device_token())
+            telemetry_base_url = str(state.get("telemetry_base_url") or "").strip()
+            state["telemetry_has_device_token"] = has_device_token
+            state["telemetry_ready"] = bool(telemetry_base_url) and (has_device_token or not requires_device_token)
+            return state
+
+        if not tm or not self._cfg_mgr.get_telemetry_enabled():
+            return _build_state()
+
+        if base_state.get("telemetry_ready"):
+            return _build_state()
+
+        try:
+            tm.report_startup()
+        except Exception:
+            return _build_state()
+
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while time.time() < deadline:
+            state = _build_state()
+            if state.get("telemetry_ready"):
+                return state
+            time.sleep(0.12)
+
+        return _build_state()
 
     def save_theme_selection(self, filename):
         # 保存前端选择的主题文件名到配置。
@@ -728,6 +1587,11 @@ class AppApi:
     def set_theme(self, mode):
         # 保存前端选择的主题模式（Light/Dark）到配置。
         self._cfg_mgr.set_theme_mode(mode)
+
+    def set_ui_language(self, language):
+        # 保存前端选择的界面语言。
+        ok = self._cfg_mgr.set_ui_language(str(language or "zh_cn"))
+        return {"success": bool(ok), "language": self._cfg_mgr.get_ui_language()}
 
     def set_launch_mode(self, mode):
         """
@@ -745,55 +1609,71 @@ class AppApi:
         - 依据配置启动 War Thunder。
         输入输出:
         - 参数: 无。
-        - 返回: bool，是否启动成功。
+        - 返回: dict，包含 success 与可选 message。
         """
-        game_path = self._cfg_mgr.get_game_path()
-        if not game_path or not os.path.exists(game_path):
-            self._logger.error("[ERROR] 无法启动游戏：路径无效")
-            return False
+        try:
+            game_path = self._cfg_mgr.get_game_path()
+            if not game_path or not os.path.exists(game_path):
+                self._logger.error("[ERROR] 无法启动游戏：路径无效")
+                return {"success": False, "message_key": "home.start_game_path_invalid"}
 
-        mode = self._cfg_mgr.get_launch_mode()
-        game_root = Path(game_path)
+            mode = self._cfg_mgr.get_launch_mode()
+            game_root = Path(game_path)
 
-        if mode == "steam":
-            try:
-                self._logger.info("[INFO] 正在通过 Steam 启动 War Thunder ...")
-                os.startfile("steam://rungameid/236390")
-                return True
-            except Exception as e:
-                self._logger.warning(f"[WARN] Steam 启动失败: {e}，尝试使用启动器...")
+            if mode == "steam":
+                try:
+                    self._logger.info("[INFO] 正在通过 Steam 启动 War Thunder ...")
+                    if sys.platform == "win32":
+                        _launch_detached(["cmd", "/c", "start", "", "steam://rungameid/236390"], cwd=str(game_root))
+                    else:
+                        if not _open_url("steam://rungameid/236390"):
+                            raise RuntimeError("无法调用系统协议处理器打开 Steam。")
+                    return {"success": True}
+                except Exception as e:
+                    self._logger.warning(f"[WARN] Steam 启动失败: {e}，尝试使用启动器...")
 
-        launcher_exe = game_root / "launcher.exe"
-        aces_exe_64 = game_root / "win64" / "aces.exe"
-        aces_exe_32 = game_root / "win32" / "aces.exe"
-        target_exe = None
+            launcher_exe = game_root / "launcher.exe"
+            aces_exe_64 = game_root / "win64" / "aces.exe"
+            aces_exe_32 = game_root / "win32" / "aces.exe"
+            target_exe = None
 
-        if mode == "aces":
-            if aces_exe_64.exists():
-                target_exe = aces_exe_64
-            elif aces_exe_32.exists():
-                target_exe = aces_exe_32
-            elif launcher_exe.exists():
-                target_exe = launcher_exe
-        else:
-            if launcher_exe.exists():
-                target_exe = launcher_exe
-            elif aces_exe_64.exists():
-                target_exe = aces_exe_64
-            elif aces_exe_32.exists():
-                target_exe = aces_exe_32
+            if mode == "aces":
+                if aces_exe_64.exists():
+                    target_exe = aces_exe_64
+                elif aces_exe_32.exists():
+                    target_exe = aces_exe_32
+                elif launcher_exe.exists():
+                    target_exe = launcher_exe
+            else:
+                if launcher_exe.exists():
+                    target_exe = launcher_exe
+                elif aces_exe_64.exists():
+                    target_exe = aces_exe_64
+                elif aces_exe_32.exists():
+                    target_exe = aces_exe_32
 
-        if target_exe:
-            try:
-                self._logger.info(f"[INFO] 正在启动游戏: {target_exe.name} ...")
-                os.startfile(str(target_exe), cwd=str(game_root))
-                return True
-            except Exception as e:
-                self._logger.error(f"[ERROR] 启动失败: {e}")
-                return False
+            if target_exe:
+                try:
+                    self._logger.info(f"[INFO] 正在启动游戏: {target_exe.name} ...")
+                    _launch_detached([str(target_exe)], cwd=str(game_root))
+                    return {"success": True}
+                except Exception as e:
+                    self._logger.error(f"[ERROR] 启动失败: {e}", exc_info=True)
+                    return {
+                        "success": False,
+                        "message_key": "home.start_game_failed_with_message",
+                        "message_params": {"message": str(e)},
+                    }
 
-        self._logger.error("[ERROR] 未找到游戏可执行文件 (launcher.exe / aces.exe)")
-        return False
+            self._logger.error("[ERROR] 未找到游戏可执行文件 (launcher.exe / aces.exe)")
+            return {"success": False, "message_key": "home.start_game_executable_not_found"}
+        except Exception as e:
+            self._logger.error(f"[ERROR] start_game 发生未处理异常: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_key": "home.start_game_exception",
+                "message_params": {"message": str(e)},
+            }
 
     def get_telemetry_status(self):
         """
@@ -816,22 +1696,22 @@ class AppApi:
         """
         self._cfg_mgr.set_telemetry_enabled(enabled)
 
-        # 无论开启还是关闭，都获取单例（如果尚未初始化则初始化）
-        tm = init_telemetry(APP_VERSION)
-
         if enabled:
-            # 重新绑定回调
-            tm.set_server_message_callback(self.on_server_message)
-            tm.set_user_command_callback(self.on_user_command)
-            tm.set_log_callback(self._logger)
+            telemetry_url, telemetry_message = self._resolve_telemetry_target_url()
+            tm = init_telemetry(APP_VERSION, telemetry_url, autostart=False)
+            self._bind_telemetry_callbacks(tm)
 
             # 手动重启服务：先停止可能存在的旧循环，再启动新循环
             tm.stop()
             tm.start_heartbeat_loop()
             tm.report_startup()
+            if telemetry_message:
+                self._logger.info(telemetry_message)
             self._logger.info("[SYS] 遥测服务已启用")
         else:
-            tm.stop()
+            tm = get_telemetry_manager()
+            if tm:
+                tm.stop()
             self._logger.info("[SYS] 遥测服务已停用")
 
     def submit_feedback(self, contact, content, category="other"):
@@ -863,6 +1743,150 @@ class AppApi:
 
         submit_feedback(contact, content, category, callback=_on_result)
         return {"submitted": True, "message": "正在提交…"}
+
+    def get_telemetry_auth_headers(self, path, method="GET", machine_id=""):
+        """
+        供前端 JS 获取当前请求所需的遥测签名头。
+        不包含浏览器禁止设置的 User-Agent。
+        """
+        tm = get_telemetry_manager()
+        resolved_machine_id = str(machine_id or "").strip()
+        if not resolved_machine_id and tm:
+            try:
+                resolved_machine_id = tm.get_machine_id()
+            except Exception:
+                resolved_machine_id = ""
+        return build_client_auth_headers(path, method=method, machine_id=resolved_machine_id)
+
+    def _request_telemetry_json_once(self, path, method="GET", params=None, payload=None, timeout_ms=8000):
+        """
+        通过 Python requests 请求遥测关联接口，避免前端 WebView 与系统网络栈差异导致的直连失败。
+        """
+        tm = get_telemetry_manager()
+        if not tm or not self._cfg_mgr.get_telemetry_enabled():
+            return {"ok": False, "status": 0, "data": {}, "error": "遥测服务未启用"}
+
+        normalized_path = "/" + str(path or "").strip().lstrip("/")
+        base_url = resolve_service_base_url(tm.report_url)
+        if not base_url:
+            return {"ok": False, "status": 0, "data": {}, "error": "遥测服务地址未配置"}
+
+        query = params if isinstance(params, dict) else {}
+        body = payload if isinstance(payload, dict) else None
+
+        machine_id = str(query.get("machine_id") or "").strip()
+        if not machine_id and isinstance(body, dict):
+            machine_id = str(body.get("machine_id") or "").strip()
+        if not machine_id:
+            try:
+                machine_id = str(tm.get_machine_id() or "").strip()
+            except Exception:
+                machine_id = ""
+
+        method_upper = str(method or "GET").upper()
+        timeout_seconds = max(3.0, min(float(timeout_ms or 0) / 1000.0, 20.0))
+        headers = build_client_auth_headers(normalized_path, method=method_upper, machine_id=machine_id)
+        headers.setdefault("Accept", "application/json")
+
+        request_kwargs = {
+            "headers": headers,
+            "params": query or None,
+            "timeout": timeout_seconds,
+        }
+        if body is not None and method_upper != "GET":
+            request_kwargs["json"] = body
+
+        url = base_url.rstrip("/") + normalized_path
+
+        try:
+            response = requests.request(method_upper, url, **request_kwargs)
+        except requests.RequestException as exc:
+            return {"ok": False, "status": 0, "data": {}, "error": str(exc) or type(exc).__name__}
+
+        text = response.text or ""
+        data = {}
+        if text:
+            try:
+                data = response.json()
+            except ValueError:
+                data = {"message": text}
+
+        issued_token = str(
+            response.headers.get("X-AimerWT-Device-Token")
+            or (data.get("client_device_token", "") if isinstance(data, dict) else "")
+            or ""
+        ).strip()
+        if issued_token:
+            set_client_device_token(issued_token)
+
+        error_message = ""
+        if not response.ok:
+            if isinstance(data, dict):
+                error_message = str(data.get("error") or data.get("message") or "").strip()
+            if not error_message and text:
+                error_message = text.strip()
+            if not error_message:
+                error_message = f"请求失败（{response.status_code}）"
+
+        return {
+            "ok": response.ok,
+            "status": int(response.status_code),
+            "data": data if isinstance(data, dict) else {},
+            "error": error_message,
+        }
+
+    def request_telemetry_json(self, path, method="GET", params=None, payload=None, timeout_ms=8000, ensure_ready=True):
+        """
+        提供给前端的遥测接口代理：
+        - 优先走 Python 侧 requests，绕开 WebView 直接 fetch 的网络兼容问题。
+        - 403/缺少设备令牌时自动触发一次重握手并重试。
+        """
+        try:
+            timeout_ms = int(timeout_ms or 0)
+        except Exception:
+            timeout_ms = 8000
+        timeout_ms = max(1000, min(timeout_ms, 20000))
+
+        if ensure_ready:
+            try:
+                self.ensure_telemetry_ready(min(timeout_ms, 3000))
+            except Exception:
+                pass
+
+        result = self._request_telemetry_json_once(
+            path,
+            method=method,
+            params=params,
+            payload=payload,
+            timeout_ms=timeout_ms,
+        )
+
+        response_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        should_retry = (
+            result.get("status") in (401, 403)
+            or bool(response_data.get("should_reauth"))
+        )
+
+        if should_retry:
+            tm = get_telemetry_manager()
+            if tm:
+                try:
+                    tm.report_startup()
+                except Exception:
+                    pass
+            try:
+                self.ensure_telemetry_ready(min(timeout_ms, 3500))
+            except Exception:
+                pass
+            result = self._request_telemetry_json_once(
+                path,
+                method=method,
+                params=params,
+                payload=payload,
+                timeout_ms=timeout_ms,
+            )
+
+        return result
 
     def get_autostart_status(self):
         """
@@ -1011,6 +2035,225 @@ class AppApi:
         log_func = level_map.get(level.lower(), log.info)
         log_func(message)
 
+    def save_client_diagnostic_log(self, content):
+        """将前端 AimerWT-Log 自动同步到本地文件。"""
+        try:
+            path = self._client_diagnostic_log_path or self._get_client_diagnostic_log_path()
+            text = str(content or "")
+            path.write_text(text, encoding="utf-8", errors="replace")
+            return {"success": True, "path": str(path)}
+        except Exception as e:
+            self._logger.error(f"保存 AimerWT-Log 失败: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _browser_import_temp_dir(self) -> Path:
+        temp_dir = Path(tempfile.gettempdir()) / "AimerWT_drag_import"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        return temp_dir
+
+    def _cleanup_stale_browser_imports(self, max_age_seconds=86400):
+        temp_dir = self._browser_import_temp_dir()
+        now = time.time()
+        try:
+            for item in temp_dir.iterdir():
+                if not item.is_file():
+                    continue
+                try:
+                    if now - item.stat().st_mtime > max_age_seconds:
+                        item.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def begin_browser_archive_import(self, target_type, file_name, file_size, import_options=None):
+        target = str(target_type or "").strip().lower()
+        if target not in {"skins", "sights", "voice"}:
+            return {"success": False, "msg": "拖入目标不支持"}
+
+        safe_name = Path(str(file_name or "archive.zip")).name
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", safe_name).strip(" .")
+        if not safe_name:
+            safe_name = "archive.zip"
+        suffix = Path(safe_name).suffix.lower()
+        allowed_suffixes = {".zip", ".rar", ".7z"}
+        if target == "voice":
+            allowed_suffixes = set(LibraryManager.SUPPORTED_EXTENSIONS)
+        if target == "sights":
+            allowed_suffixes.add(".blk")
+        if suffix not in allowed_suffixes:
+            if target == "voice":
+                return {"success": False, "msg": "当前语音包库不支持该文件格式"}
+            if target == "sights":
+                return {"success": False, "msg": "当前仅支持 .blk/.zip/.rar/.7z 炮镜文件"}
+            return {"success": False, "msg": "当前仅支持 .zip/.rar/.7z 压缩包"}
+
+        try:
+            size = int(file_size or 0)
+        except Exception:
+            size = 0
+        if size <= 0:
+            return {"success": False, "msg": "拖入文件为空"}
+
+        if self._is_busy:
+            return {"success": False, "msg": "另一个任务正在进行中，请稍候"}
+
+        self._cleanup_stale_browser_imports()
+        session_id = hashlib.sha1(f"{time.time()}:{random.random()}:{safe_name}".encode("utf-8")).hexdigest()
+        temp_path = self._browser_import_temp_dir() / safe_name
+        try:
+            temp_path.write_bytes(b"")
+        except Exception as e:
+            record_diagnostic_event("browser_import", "begin_failed", "error", "创建拖入临时文件失败", error=str(e))
+            return {"success": False, "msg": f"创建临时文件失败: {e}"}
+
+        with self._browser_import_lock:
+            self._browser_import_sessions[session_id] = {
+                "target": target,
+                "file_name": safe_name,
+                "import_options": import_options if isinstance(import_options, dict) else {},
+                "expected_size": size,
+                "received_size": 0,
+                "chunk_count": 0,
+                "temp_path": str(temp_path),
+                "created_at": time.time(),
+            }
+
+        record_diagnostic_event(
+            "browser_import",
+            "begin",
+            "info",
+            "浏览器拖入分片接收开始",
+            target=target,
+            file_name=safe_name,
+            file_size=size,
+            temp_path=temp_path,
+        )
+        return {"success": True, "session_id": session_id}
+
+    def append_browser_archive_chunk(self, session_id, chunk_base64):
+        session_key = str(session_id or "")
+        with self._browser_import_lock:
+            session = self._browser_import_sessions.get(session_key)
+            if not session:
+                return {"success": False, "msg": "拖入导入任务不存在"}
+            temp_path = Path(session["temp_path"])
+
+        try:
+            chunk = base64.b64decode(str(chunk_base64 or "").encode("ascii"), validate=True)
+            if not chunk:
+                return {"success": False, "msg": "拖入文件分片为空"}
+            with temp_path.open("ab") as file:
+                file.write(chunk)
+            with self._browser_import_lock:
+                current = self._browser_import_sessions.get(session_key)
+                if current:
+                    current["received_size"] = int(current.get("received_size") or 0) + len(chunk)
+                    current["chunk_count"] = int(current.get("chunk_count") or 0) + 1
+                    received = current["received_size"]
+                else:
+                    received = 0
+            return {"success": True, "received_size": received}
+        except Exception as e:
+            record_diagnostic_event(
+                "browser_import",
+                "append_failed",
+                "error",
+                "写入拖入分片失败",
+                session_id=session_key,
+                error=str(e),
+            )
+            return {"success": False, "msg": f"写入分片失败: {e}"}
+
+    def finish_browser_archive_import(self, session_id):
+        session_key = str(session_id or "")
+        with self._browser_import_lock:
+            session = self._browser_import_sessions.pop(session_key, None)
+        if not session:
+            return {"success": False, "msg": "拖入导入任务不存在"}
+
+        temp_path = Path(session["temp_path"])
+        expected_size = int(session.get("expected_size") or 0)
+        received_size = int(session.get("received_size") or 0)
+        if expected_size and received_size != expected_size:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            record_diagnostic_event(
+                "browser_import",
+                "size_mismatch",
+                "error",
+                "拖入文件大小不一致",
+                expected_size=expected_size,
+                received_size=received_size,
+                temp_path=temp_path,
+            )
+            return {"success": False, "msg": "拖入文件接收不完整"}
+
+        target = str(session.get("target") or "")
+        record_diagnostic_event(
+            "browser_import",
+            "finish",
+            "info",
+            "浏览器拖入分片接收完成",
+            target=target,
+            file_name=session.get("file_name"),
+            received_size=received_size,
+            chunk_count=session.get("chunk_count"),
+            temp_path=temp_path,
+        )
+
+        if target == "skins":
+            started = self.import_skin_zip_from_path(str(temp_path))
+        elif target == "voice":
+            started = self.import_voice_zip_from_path(str(temp_path))
+        elif target == "sights":
+            import_options = session.get("import_options")
+            if not isinstance(import_options, dict):
+                import_options = {}
+            import_options.setdefault("conflict_strategy", "backup")
+            started = self.import_sight_file_from_path(str(temp_path), import_options)
+        else:
+            started = False
+
+        if not started:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return {"success": False, "msg": "启动导入失败"}
+
+        def _delayed_cleanup(path):
+            time.sleep(3600)
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        threading.Thread(target=_delayed_cleanup, args=(str(temp_path),), name="BrowserImportCleanup", daemon=True).start()
+        return {"success": True}
+
+    def cancel_browser_archive_import(self, session_id):
+        session_key = str(session_id or "")
+        with self._browser_import_lock:
+            session = self._browser_import_sessions.pop(session_key, None)
+        if session:
+            temp_path = Path(session.get("temp_path") or "")
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            record_diagnostic_event(
+                "browser_import",
+                "cancel",
+                "info",
+                "浏览器拖入分片接收取消",
+                session_id=session_key,
+                temp_path=temp_path,
+            )
+        return {"success": True}
+
     def start_auto_search(self):
         # 在后台线程执行游戏目录自动搜索，并将结果写入配置后通知前端更新显示。
         if self._search_running:
@@ -1049,11 +2292,11 @@ class AppApi:
                 current_time = time.time()
                 if current_time - last_update >= update_interval or progress >= 100:
                     char = next(spinner)
-                    msg_js = json.dumps(
-                        f"[扫描] 正在检索存储设备... [{char}] {progress}%",
-                        ensure_ascii=False,
+                    self._call_app_method(
+                        "updateSearchLogI18n",
+                        "log.search.scanning",
+                        {"char": char, "progress": progress},
                     )
-                    self._window.evaluate_js(f"app.updateSearchLog({msg_js})")
                     last_update = current_time
 
             time.sleep(0.3)
@@ -1635,10 +2878,7 @@ class AppApi:
                     return
                 try:
                     safe_pct = max(0, min(100, int(pct)))
-                    msg_js = json.dumps(str(msg or ""), ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update({safe_pct}, {msg_js})"
-                    )
+                    self.update_loading_ui(safe_pct, msg)
                 except Exception:
                     pass
 
@@ -1934,10 +3174,26 @@ class AppApi:
         if not url:
             return
 
-        import re
         u = str(url).strip()
-        if not re.match(r'^[a-zA-Z]+://', u):
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', u):
             u = "https://" + u
+
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(u)
+            scheme = parsed.scheme.lower()
+            if scheme not in {"http", "https", "mailto"}:
+                self._logger.warning(f"[WARN] 已拦截不支持的外部链接协议: {scheme or 'empty'}")
+                return
+            if scheme in {"http", "https"} and not parsed.netloc:
+                self._logger.warning("[WARN] 已拦截格式异常的外部链接")
+                return
+            if scheme == "mailto" and not parsed.path:
+                self._logger.warning("[WARN] 已拦截格式异常的邮件链接")
+                return
+        except Exception as e:
+            self._logger.error(f"[ERROR] 外部链接校验失败: {e}")
+            return
 
         try:
             import os
@@ -1950,12 +3206,16 @@ class AppApi:
         # 将进度与提示文本推送到前端加载组件 MinimalistLoading。
         if self._window:
             try:
-                safe_msg = str(message).replace("\r", " ").replace("\n", " ")
                 safe_progress = max(0, min(100, int(progress)))
-                msg_js = json.dumps(safe_msg, ensure_ascii=True)
-                self._window.evaluate_js(
-                    f"if(window.MinimalistLoading) MinimalistLoading.update({safe_progress}, {msg_js})"
-                )
+                payload = self._runtime_loading_i18n_payload(message)
+                if payload:
+                    self._update_loading_i18n(safe_progress, payload["key"], payload["params"])
+                else:
+                    safe_msg = str(message).replace("\r", " ").replace("\n", " ")
+                    msg_js = json.dumps(safe_msg, ensure_ascii=True)
+                    self._window.evaluate_js(
+                        f"if(window.MinimalistLoading) MinimalistLoading.update({safe_progress}, {msg_js})"
+                    )
             except Exception as e:
                 log.error(f"Loading UI 更新失败: {e}")
 
@@ -1984,7 +3244,8 @@ class AppApi:
             self._password_value = None
             self._password_cancelled = False
         name_js = json.dumps(str(archive_name or ""), ensure_ascii=False)
-        err_js = json.dumps(str(error_hint or ""), ensure_ascii=False)
+        payload = self._coerce_i18n_payload(error_hint)
+        err_js = json.dumps(payload if payload else str(error_hint or ""), ensure_ascii=False)
         self._window.evaluate_js(f"app.openArchivePasswordModal({name_js}, {err_js})")
         self._password_event.wait()
         with self._password_lock:
@@ -2001,16 +3262,13 @@ class AppApi:
 
         # 显示加载组件（关闭自动模拟，由后端推送真实进度）
         if self._window:
-            msg_js = json.dumps("正在准备导入...", ensure_ascii=False)
-            self._window.evaluate_js(
-                f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
-            )
+            self._show_loading_i18n("loading.import.prepare")
             self.update_loading_ui(1, "开始扫描待解压区...")
 
         def _run():
             try:
                 def password_provider(archive_path, reason):
-                    hint = "密码错误，请重试" if reason == "incorrect" else ""
+                    hint = self._i18n_payload("modal.archive_password_incorrect") if reason == "incorrect" else ""
                     return self._request_archive_password(Path(archive_path).name, hint)
 
                 self._lib_mgr.unzip_zips_to_library(
@@ -2021,10 +3279,7 @@ class AppApi:
                 # 完成后通知前端刷新列表
                 if self._window:
                     self._window.evaluate_js("app.refreshLibrary()")
-                    msg_js = json.dumps("导入完成", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.import.done")
             except ArchivePasswordCanceled:
                 log.warning("已取消输入密码，导入已终止")
                 if self._window:
@@ -2034,10 +3289,7 @@ class AppApi:
             except Exception as e:
                 log.error(f"导入失败: {e}")
                 if self._window:
-                    msg_js = json.dumps("导入失败", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.import.failed")
             finally:
                 self._is_busy = False
 
@@ -2073,19 +3325,14 @@ class AppApi:
 
             # 显示加载条
             if self._window:
-                msg_js = json.dumps(
-                    f"准备导入: {Path(zip_path).name}", ensure_ascii=False
-                )
-                self._window.evaluate_js(
-                    f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
-                )
+                self._show_loading_i18n("loading.import.prepare_named", {"name": Path(zip_path).name})
 
             def _run():
                 try:
                     self.update_loading_ui(1, f"正在读取: {Path(zip_path).name}")
 
                     def password_provider(archive_path, reason):
-                        hint = "密码错误，请重试" if reason == "incorrect" else ""
+                        hint = self._i18n_payload("modal.archive_password_incorrect") if reason == "incorrect" else ""
                         return self._request_archive_password(Path(archive_path).name, hint)
 
                     self._lib_mgr.unzip_single_zip(
@@ -2097,10 +3344,7 @@ class AppApi:
                     # 完成后通知前端刷新列表
                     if self._window:
                         self._window.evaluate_js("app.refreshLibrary()")
-                        msg_js = json.dumps("导入完成", ensure_ascii=False)
-                        self._window.evaluate_js(
-                            f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                        )
+                        self._update_loading_i18n(100, "loading.import.done")
                 except ArchivePasswordCanceled:
                     log.warning("已取消输入密码，导入已终止")
                     if self._window:
@@ -2110,10 +3354,7 @@ class AppApi:
                 except Exception as e:
                     log.error(f"导入失败: {e}")
                     if self._window:
-                        msg_js = json.dumps("导入失败", ensure_ascii=False)
-                        self._window.evaluate_js(
-                            f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                        )
+                        self._update_loading_i18n(100, "loading.import.failed")
                 finally:
                     self._is_busy = False
 
@@ -2133,17 +3374,14 @@ class AppApi:
         self._is_busy = True
 
         if self._window:
-            msg_js = json.dumps(f"准备导入: {Path(zip_path).name}", ensure_ascii=False)
-            self._window.evaluate_js(
-                f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
-            )
+            self._show_loading_i18n("loading.import.prepare_named", {"name": Path(zip_path).name})
 
         def _run():
             try:
                 self.update_loading_ui(1, f"正在读取: {Path(zip_path).name}")
 
                 def password_provider(archive_path, reason):
-                    hint = "密码错误，请重试" if reason == "incorrect" else ""
+                    hint = self._i18n_payload("modal.archive_password_incorrect") if reason == "incorrect" else ""
                     return self._request_archive_password(Path(archive_path).name, hint)
 
                 self._lib_mgr.unzip_single_zip(
@@ -2154,10 +3392,7 @@ class AppApi:
 
                 if self._window:
                     self._window.evaluate_js("app.refreshLibrary()")
-                    msg_js = json.dumps("导入完成", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.import.done")
             except ArchivePasswordCanceled:
                 log.warning("已取消输入密码，导入已终止")
                 if self._window:
@@ -2165,10 +3400,7 @@ class AppApi:
             except Exception as e:
                 log.error(f"导入失败: {e}")
                 if self._window:
-                    msg_js = json.dumps("导入失败", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.import.failed")
             finally:
                 self._is_busy = False
 
@@ -2228,6 +3460,32 @@ class AppApi:
             return True, "已就绪"
         except Exception as e:
             return False, f"创建 lang/AimerWT 失败: {e}"
+
+    def _resolve_custom_text_temp_dir(self, lang_dir: Path, temp_dir_value) -> Path | None:
+        temp_dir_text = str(temp_dir_value or "").strip()
+        if not temp_dir_text:
+            return None
+
+        try:
+            aimer_dir = (Path(lang_dir) / "aimerWT").resolve(strict=False)
+            temp_dir = Path(temp_dir_text).expanduser().resolve(strict=False)
+        except Exception:
+            return None
+
+        if temp_dir.name not in {".import_temp", ".skipped_files"}:
+            return None
+
+        def norm_path(path: Path) -> str:
+            return os.path.normcase(os.path.normpath(str(path)))
+
+        if norm_path(temp_dir.parent) != norm_path(aimer_dir):
+            return None
+
+        return temp_dir
+
+    def _cleanup_custom_text_temp_dir(self, temp_dir: Path) -> None:
+        if temp_dir.exists() and temp_dir.is_dir():
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _redirect_localization_for_files(self, lang_dir: Path, changed_files: list[str]) -> tuple[bool, str]:
         if not changed_files:
@@ -2787,17 +4045,30 @@ class AppApi:
 
         deleted_files = []
         failed_files = []
+        aimer_dir_resolved = aimer_dir.resolve(strict=False)
 
         for file_name in file_names:
-            file_path = aimer_dir / file_name
+            raw_file_name = str(file_name or "").strip()
+            safe_file_name = sanitize_csv_file_name(raw_file_name)
+            if not safe_file_name or Path(safe_file_name).name != safe_file_name:
+                failed_files.append(f"{raw_file_name or file_name} (文件名不安全)")
+                continue
+
+            file_path = (aimer_dir / safe_file_name).resolve(strict=False)
+            try:
+                file_path.relative_to(aimer_dir_resolved)
+            except ValueError:
+                failed_files.append(f"{safe_file_name} (路径越界)")
+                continue
+
             try:
                 if file_path.exists():
                     file_path.unlink()
-                    deleted_files.append(file_name)
+                    deleted_files.append(safe_file_name)
                 else:
-                    failed_files.append(f"{file_name} (文件不存在)")
+                    failed_files.append(f"{safe_file_name} (文件不存在)")
             except Exception as e:
-                failed_files.append(f"{file_name} ({e})")
+                failed_files.append(f"{safe_file_name} ({e})")
 
         if not deleted_files:
             return {"success": False, "msg": "没有成功删除任何文件。", "failed": failed_files}
@@ -2840,10 +4111,6 @@ class AppApi:
         if not selected_files or not temp_dir_str:
             return {"success": False, "msg": "缺少必要参数。"}
 
-        temp_dir = Path(temp_dir_str)
-        if not temp_dir.exists():
-            return {"success": False, "msg": "临时文件已被清理，请重新导入。"}
-
         game_path = self._cfg_mgr.get_game_path()
         if not game_path:
             return {"success": False, "msg": "请先在主页设置游戏路径。"}
@@ -2861,6 +4128,11 @@ class AppApi:
             return {"success": False, "msg": info}
 
         aimer_dir = lang_dir / "aimerWT"
+        temp_dir = self._resolve_custom_text_temp_dir(lang_dir, temp_dir_str)
+        if not temp_dir:
+            return {"success": False, "msg": "临时目录路径不安全，请重新导入。"}
+        if not temp_dir.exists():
+            return {"success": False, "msg": "临时文件已被清理，请重新导入。"}
 
         try:
             # 查找临时目录中的所有CSV文件
@@ -2891,8 +4163,7 @@ class AppApi:
                     mapping_info.append(f"✗ 失败: {file_name} ({e})")
 
             # 清理临时目录
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._cleanup_custom_text_temp_dir(temp_dir)
 
             if not imported_files:
                 return {"success": False, "msg": "没有成功导入任何文件。", "details": mapping_info}
@@ -2911,8 +4182,7 @@ class AppApi:
 
         except Exception as e:
             # 出错时也清理临时目录
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._cleanup_custom_text_temp_dir(temp_dir)
             return {"success": False, "msg": f"手动导入失败: {e}"}
 
     def cleanup_import_temp(self, payload):
@@ -2932,10 +4202,17 @@ class AppApi:
         if not temp_dir_str:
             return {"success": False, "msg": "缺少临时目录路径。"}
 
-        temp_dir = Path(temp_dir_str)
+        game_path = self._cfg_mgr.get_game_path()
+        if not game_path:
+            return {"success": False, "msg": "请先在主页设置游戏路径。"}
+
+        lang_dir = Path(game_path) / "lang"
+        temp_dir = self._resolve_custom_text_temp_dir(lang_dir, temp_dir_str)
+        if not temp_dir:
+            return {"success": False, "msg": "临时目录路径不安全。"}
+
         try:
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._cleanup_custom_text_temp_dir(temp_dir)
             return {"success": True, "msg": "清理成功。"}
         except Exception as e:
             return {"success": False, "msg": f"清理失败: {e}"}
@@ -3346,6 +4623,268 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": f"还原失败: {e}"}
 
+    def _get_resource_storage_path(self, resource_type):
+        resource_type = str(resource_type or "").strip().lower()
+
+        if resource_type == "skins":
+            game_path = self._cfg_mgr.get_game_path()
+            valid, _ = self._logic.validate_game_path(game_path)
+            if not valid:
+                return None
+            return self._skins_mgr.get_userskins_dir(game_path)
+
+        if resource_type == "sights":
+            return self._sights_mgr.get_usersights_path()
+
+        if resource_type == "tasks":
+            return Path(self._task_mgr.get_task_library_path())
+
+        if resource_type == "models":
+            return Path(self._model_mgr.get_model_library_path())
+
+        if resource_type == "hangar":
+            return Path(self._hangar_mgr.get_hangar_library_path())
+
+        return None
+
+    def _get_existing_storage_anchor(self, target_path):
+        path = Path(target_path)
+        if path.exists():
+            return path
+
+        for parent in path.parents:
+            if parent.exists():
+                return parent
+
+        return None
+
+    def _get_folder_size_bytes(self, folder_path):
+        root = Path(folder_path)
+        if not root.exists() or not root.is_dir():
+            return 0
+
+        total = 0
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                total += entry.stat(follow_symlinks=False).st_size
+                        except (FileNotFoundError, PermissionError, OSError):
+                            continue
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+
+        return total
+
+    def get_resource_storage_info(self, resource_type):
+        # 返回资源库所在盘符与当前库目录用量；任何路径或权限异常都降级为安全结果。
+        try:
+            target_path = self._get_resource_storage_path(resource_type)
+            if not target_path:
+                return {
+                    "success": False,
+                    "resource_type": str(resource_type or ""),
+                    "reason": "path_not_found",
+                }
+
+            target_path = Path(target_path)
+            anchor = self._get_existing_storage_anchor(target_path)
+            if not anchor:
+                return {
+                    "success": False,
+                    "resource_type": str(resource_type or ""),
+                    "path": str(target_path),
+                    "path_exists": False,
+                    "reason": "path_not_found",
+                }
+
+            usage = shutil.disk_usage(str(anchor))
+            folder_size = self._get_folder_size_bytes(target_path)
+            used_bytes = max(0, usage.total - usage.free)
+
+            return {
+                "success": True,
+                "resource_type": str(resource_type or ""),
+                "path": str(target_path),
+                "path_exists": target_path.exists(),
+                "total_bytes": usage.total,
+                "used_bytes": used_bytes,
+                "free_bytes": usage.free,
+                "folder_size_bytes": folder_size,
+            }
+        except Exception as e:
+            log.error(f"获取资源库存储信息失败: {e}")
+            return {
+                "success": False,
+                "resource_type": str(resource_type or ""),
+                "reason": str(e),
+            }
+
+    def _resource_display_root_path(self, resource_type: str) -> Path | None:
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key == "skins":
+            return self._skins_mgr.get_userskins_dir(self._cfg_mgr.get_game_path())
+        if resource_key == "sights":
+            path = self._sights_mgr.get_usersights_path()
+            return Path(path) if path else None
+        if resource_key == "tasks":
+            return self._task_mgr.task_library_dir
+        if resource_key == "models":
+            return self._model_mgr.model_library_dir
+        if resource_key == "hangar":
+            return self._hangar_mgr.hangar_library_dir
+        return None
+
+    def _resource_display_root_key(self, resource_type: str) -> str:
+        root_path = self._resource_display_root_path(resource_type)
+        if root_path is None:
+            return ""
+        try:
+            resolved = root_path.resolve(strict=False)
+        except Exception:
+            resolved = root_path
+        return os.path.normcase(os.path.normpath(str(resolved)))
+
+    def _migrate_legacy_skin_display_names(self, store: dict) -> None:
+        legacy = self._cfg_mgr.config.get("skin_display_names")
+        if not isinstance(legacy, dict):
+            if "skin_display_names" in self._cfg_mgr.config:
+                self._cfg_mgr.config.pop("skin_display_names", None)
+                self._cfg_mgr.save_config()
+            return
+        if legacy:
+            skins_store = store.setdefault("skins", {})
+            if isinstance(skins_store, dict):
+                for root_key, entries in legacy.items():
+                    if root_key not in skins_store and isinstance(entries, dict):
+                        skins_store[root_key] = entries
+        self._cfg_mgr.config.pop("skin_display_names", None)
+        self._cfg_mgr.save_config()
+
+    def _resource_display_entries(self, resource_type: str, create: bool = True) -> dict:
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key not in {"skins", "sights", "tasks", "models", "hangar"}:
+            return {}
+
+        store = self._cfg_mgr.config.get("resource_display_names")
+        if not isinstance(store, dict):
+            if not create and "skin_display_names" not in self._cfg_mgr.config:
+                return {}
+            store = {}
+            self._cfg_mgr.config["resource_display_names"] = store
+
+        self._migrate_legacy_skin_display_names(store)
+
+        type_store = store.get(resource_key)
+        if not isinstance(type_store, dict):
+            if not create:
+                return {}
+            type_store = {}
+            store[resource_key] = type_store
+
+        root_key = self._resource_display_root_key(resource_key)
+        if not root_key:
+            return {}
+
+        entries = type_store.get(root_key)
+        if not isinstance(entries, dict):
+            if not create:
+                return {}
+            entries = {}
+            type_store[root_key] = entries
+        return entries
+
+    def _apply_resource_display_names(self, resource_type: str, data):
+        entries = self._resource_display_entries(resource_type, create=False)
+        items = data.get("items") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return data
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            folder_name = str(item.get("name") or "")
+            enabled_name = str(item.get("enabled_name") or "").strip()
+            display_name = str(entries.get(folder_name) or entries.get(enabled_name) or "").strip()
+            item["folder_name"] = folder_name
+            item["display_name"] = display_name or enabled_name or folder_name
+        return data
+
+    def _move_resource_display_name(self, resource_type: str, old_name, new_name) -> None:
+        entries = self._resource_display_entries(resource_type, create=False)
+        old_key = str(old_name or "").strip()
+        new_key = str(new_name or "").strip()
+        if not old_key or not new_key or old_key == new_key:
+            return
+        if old_key in entries:
+            entries[new_key] = entries.pop(old_key)
+            self._cfg_mgr.save_config()
+
+    def _delete_resource_display_name(self, resource_type: str, folder_name) -> None:
+        entries = self._resource_display_entries(resource_type, create=False)
+        folder_key = str(folder_name or "").strip()
+        if folder_key and folder_key in entries:
+            entries.pop(folder_key, None)
+            self._prune_resource_display_entries(resource_type)
+            self._cfg_mgr.save_config()
+
+    def _prune_resource_display_entries(self, resource_type: str) -> None:
+        resource_key = str(resource_type or "").strip().lower()
+        store = self._cfg_mgr.config.get("resource_display_names")
+        if not isinstance(store, dict):
+            return
+        type_store = store.get(resource_key)
+        if not isinstance(type_store, dict):
+            return
+        root_key = self._resource_display_root_key(resource_key)
+        entries = type_store.get(root_key)
+        if isinstance(entries, dict) and not entries:
+            type_store.pop(root_key, None)
+        if not type_store:
+            store.pop(resource_key, None)
+
+    def set_resource_display_name(self, resource_type, folder_name, display_name):
+        resource_key = str(resource_type or "").strip().lower()
+        if resource_key not in {"skins", "sights", "tasks", "models", "hangar"}:
+            return {"success": False, "msg": "资源类型不支持"}
+
+        folder_name = str(folder_name or "").strip()
+        display_name = str(display_name or "").strip()
+
+        if not folder_name:
+            return {"success": False, "msg": "原始文件夹名不能为空"}
+        if not display_name:
+            return {"success": False, "msg": "显示名称不能为空"}
+        if len(display_name) > 32:
+            return {"success": False, "msg": "显示名称不能超过 32 个字符"}
+        if any(ord(ch) < 32 for ch in display_name):
+            return {"success": False, "msg": "显示名称不能包含控制字符"}
+
+        root_path = self._resource_display_root_path(resource_key)
+        item_dir = (root_path / folder_name) if root_path else None
+        if not item_dir or not item_dir.exists():
+            return {"success": False, "msg": f"找不到资源文件夹: {folder_name}"}
+
+        entries = self._resource_display_entries(resource_key)
+        if display_name == folder_name:
+            entries.pop(folder_name, None)
+            self._prune_resource_display_entries(resource_key)
+        else:
+            entries[folder_name] = display_name
+
+        if not self._cfg_mgr.save_config():
+            return {"success": False, "msg": "显示名称保存失败"}
+        return {"success": True}
+
+    def set_skin_display_name(self, folder_name, display_name):
+        return self.set_resource_display_name("skins", folder_name, display_name)
+
     def refresh_skins_async(self, opts=None):
         """
         先传回基本信息，再异步推送封面数据。
@@ -3366,6 +4905,7 @@ class AppApi:
                     game_path, default_cover_path=default_cover_path,
                     force_refresh=force_refresh, skip_covers=True
                 )
+                self._apply_resource_display_names("skins", data)
                 data["valid"] = True
 
                 # 推送基本列表到前端，让界面先渲染出来
@@ -3373,22 +4913,22 @@ class AppApi:
                     js_data = json.dumps(data, ensure_ascii=False)
                     self._window.evaluate_js(f"if(app.onSkinsListReady) app.onSkinsListReady({js_data})")
 
-                items = data.get("items", [])
+                full_data = self._skins_mgr.scan_userskins(
+                    game_path, default_cover_path=default_cover_path,
+                    force_refresh=force_refresh, skip_covers=False
+                )
+                items = full_data.get("items", [])
                 for it in items:
                     name = it.get("name")
-                    preview_path = it.get("preview_path")
-                    cover_url = ""
-
-                    if preview_path and Path(preview_path).exists():
-                        cover_url = self._skins_mgr._to_data_url(Path(preview_path))
-                    elif default_cover_path.exists():
-                        cover_url = self._skins_mgr._to_data_url(default_cover_path)
+                    cover_url = it.get("cover_url") or ""
+                    cover_is_default = bool(it.get("cover_is_default"))
 
                     if self._window and cover_url:
                         # 单条推送，避免大数据包造成的卡顿
                         name_js = json.dumps(name, ensure_ascii=False)
                         url_js = json.dumps(cover_url, ensure_ascii=True)
-                        self._window.evaluate_js(f"if(app.onSkinCoverReady) app.onSkinCoverReady({name_js}, {url_js})")
+                        default_js = json.dumps(cover_is_default)
+                        self._window.evaluate_js(f"if(app.onSkinCoverReady) app.onSkinCoverReady({name_js}, {url_js}, {default_js})")
             except Exception as e:
                 log.error(f"后台刷新涂装库失败: {e}")
 
@@ -3401,8 +4941,48 @@ class AppApi:
         default_cover_path = WEB_DIR / "assets" / "card_image_small.png"
         force_refresh = bool(opts.get("force_refresh")) if opts else False
         data = self._skins_mgr.scan_userskins(path, default_cover_path, force_refresh)
+        self._apply_resource_display_names("skins", data)
         data["valid"] = True
         return data
+
+    def discover_userskins_residue(self):
+        # 搜索当前电脑上可能存在的多个 War Thunder UserSkins 目录，供前端迁移向导使用。
+        try:
+            game_path = self._cfg_mgr.get_game_path()
+            return self._skins_mgr.discover_userskins_locations(configured_game_path=game_path)
+        except Exception as e:
+            log.error(f"UserSkins 残留检测失败: {e}")
+            return {"success": False, "msg": str(e), "folders": []}
+
+    def migrate_userskins_residue(self, source_userskins_path, target_userskins_path):
+        # 将一个 UserSkins 的涂装文件夹复制到另一个 UserSkins；不覆盖同名项，不删除来源。
+        if self._is_busy:
+            return {"success": False, "msg": "另一个任务正在进行中，请稍候..."}
+        self._is_busy = True
+        try:
+            target_game_path = str(Path(str(target_userskins_path)).expanduser().parent)
+            valid, msg = self._logic.validate_game_path(target_game_path)
+            if not valid:
+                return {"success": False, "msg": msg or "目标游戏路径无效", "copied_count": 0, "skipped_count": 0, "failed_count": 1}
+            return self._skins_mgr.migrate_userskins_items(source_userskins_path, target_userskins_path)
+        except Exception as e:
+            log.error(f"UserSkins 迁移失败: {e}")
+            return {"success": False, "msg": str(e), "copied_count": 0, "skipped_count": 0, "failed_count": 1}
+        finally:
+            self._is_busy = False
+
+    def set_userskins_residue_game_path(self, game_path):
+        # 将迁移向导中选定的有效游戏目录设为当前涂装库路径。
+        try:
+            game_path = str(game_path or "")
+            valid, msg = self._logic.validate_game_path(game_path)
+            if not valid:
+                return {"success": False, "msg": msg or "路径无效"}
+            self._cfg_mgr.set_game_path(game_path)
+            return {"success": True, "path": game_path}
+        except Exception as e:
+            log.error(f"设置 UserSkins 主版本路径失败: {e}")
+            return {"success": False, "msg": str(e)}
 
     def import_skin_zip_dialog(self):
         if self._is_busy:
@@ -3415,7 +4995,7 @@ class AppApi:
             log.error(f"未设置有效游戏路径: {msg}")
             return False
 
-        file_types = ("Zip Files (*.zip)", "All files (*.*)")
+        file_types = ("Archive Files (*.zip;*.rar;*.7z)", "All files (*.*)")
         result = self._window.create_file_dialog(
             webview.FileDialog.OPEN, allow_multiple=False, file_types=file_types
         )
@@ -3441,10 +5021,7 @@ class AppApi:
         self._is_busy = True
 
         if self._window:
-            msg_js = json.dumps(f"涂装解压: {Path(zip_path).name}", ensure_ascii=False)
-            self._window.evaluate_js(
-                f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
-            )
+            self._show_loading_i18n("loading.skin.extracting_named", {"name": Path(zip_path).name})
 
         def _run():
             try:
@@ -3453,10 +5030,7 @@ class AppApi:
                 )
                 if self._window:
                     self._window.evaluate_js("if(app.refreshSkins) app.refreshSkins()")
-                    msg_js = json.dumps("涂装导入完成", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.skin.import_done")
             except FileExistsError as e:
                 log.warning(f"{e}")
                 if self._window:
@@ -3467,10 +5041,7 @@ class AppApi:
             except Exception as e:
                 log.error(f"涂装导入失败: {e}")
                 if self._window:
-                    msg_js = json.dumps("涂装导入失败", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.skin.import_failed")
             finally:
                 self._is_busy = False
 
@@ -3484,6 +5055,7 @@ class AppApi:
         path = self._cfg_mgr.get_game_path()
         try:
             self._skins_mgr.rename_skin(path, old_name, new_name)
+            self._move_resource_display_name("skins", old_name, new_name)
             return {"success": True}
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -3520,6 +5092,44 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": str(e)}
 
+    def open_skin_folder_by_name(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            ok = self._skins_mgr.open_skin_folder(path, skin_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.disable_skin(path, skin_name)
+            if result.get("success"):
+                self._move_resource_display_name("skins", skin_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.enable_skin(path, skin_name)
+            if result.get("success"):
+                self._move_resource_display_name("skins", skin_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_skin(self, skin_name):
+        try:
+            path = self._cfg_mgr.get_game_path()
+            result = self._skins_mgr.delete_skin(path, skin_name)
+            if result.get("success"):
+                self._delete_resource_display_name("skins", skin_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
     def install_mod(self, mod_name, install_list):
         # 将指定语音包按选择的文件夹列表安装到游戏 sound/mod，并更新前端加载进度与安装状态。
         # install_list 可能以 JSON 字符串形式传入
@@ -3551,25 +5161,61 @@ class AppApi:
         def _run():
             try:
                 mod_path = self._lib_mgr.library_dir / mod_name
-                self._logic.install_from_library(
+                result = self._logic.install_from_library(
                     mod_path, install_list, progress_callback=self.update_loading_ui
                 )
 
-                # 安装完成，通知前端
+                # 根据安装结果通知前端
                 if self._window:
-                    self._window.evaluate_js(
-                        f"if(app.onInstallSuccess) app.onInstallSuccess('{mod_name}')"
-                    )
-                    msg_js = json.dumps("安装完成", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    if isinstance(result, dict):
+                        if result.get("success"):
+                            failed_count = result.get("failed", 0)
+                            if failed_count > 0:
+                                # 部分成功
+                                self._update_loading_i18n(
+                                    100,
+                                    "loading.install.done_with_failed_files",
+                                    {"count": failed_count},
+                                )
+                            else:
+                                self._update_loading_i18n(100, "loading.install.done")
+                            self._window.evaluate_js(
+                                f"if(app.onInstallSuccess) app.onInstallSuccess('{mod_name}')"
+                            )
+                        else:
+                            # 安装失败
+                            error_msg = result.get("error", "")
+                            failed_count = result.get("failed", 0)
+                            if error_msg:
+                                self._update_loading_i18n(
+                                    100,
+                                    "loading.install.failed_with_reason",
+                                    {"reason": error_msg},
+                                )
+                            elif failed_count > 0:
+                                self._update_loading_i18n(
+                                    100,
+                                    "loading.install.failed_file_count",
+                                    {"count": failed_count},
+                                )
+                            else:
+                                self._update_loading_i18n(100, "loading.install.failed")
+                    else:
+                        # 兼容旧版返回 bool 的情况
+                        if result:
+                            self._window.evaluate_js(
+                                f"if(app.onInstallSuccess) app.onInstallSuccess('{mod_name}')"
+                            )
+                            self._update_loading_i18n(100, "loading.install.done")
+                        else:
+                            self._update_loading_i18n(100, "loading.install.failed")
             except Exception as e:
                 log.error(f"安装失败: {e}")
                 if self._window:
-                    msg_js = json.dumps("安装失败", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
+                    self._update_loading_i18n(
+                        100,
+                        "loading.install.failed_with_reason",
+                        {"reason": e},
                     )
             finally:
                 with self._lock:
@@ -3869,8 +5515,8 @@ class AppApi:
                         {
                             "filename": file.name,
                             "name": meta.get("name", file.stem),
-                            "author": meta.get("author", "Unknown"),
-                            "version": meta.get("version", "1.0"),
+                            "author": meta.get("author", ""),
+                            "version": meta.get("version", ""),
                             "sort_order": sort_order,
                         }
                     )
@@ -3900,9 +5546,86 @@ class AppApi:
             log.error(f"加载主题失败: {e}")
             return None
 
+    def get_app_version(self):
+        """返回当前软件版本号，供前端更新检测卡片展示"""
+        return {"version": APP_VERSION}
+
+    def check_for_update(self):
+        """向服务端查询最新版本号，与本地版本比较并返回结果"""
+        import requests
+        tm = get_telemetry_manager()
+        if not tm or not tm.report_url:
+            return {"success": False, "message": "遥测服务未配置"}
+
+        version_url = resolve_related_endpoint(tm.report_url, "/latest-version")
+        try:
+            resp = requests.get(version_url, timeout=10, headers={
+                "User-Agent": f"AimerWT-Client/{APP_VERSION}",
+            })
+            data = resp.json()
+            latest = str(data.get("latest_version", "") or "").strip()
+            if not latest:
+                return {"success": True, "has_update": False, "current": APP_VERSION,
+                        "message": "服务端暂未配置版本信息"}
+
+            has_update = latest != APP_VERSION
+            result = {
+                "success": True,
+                "has_update": has_update,
+                "current": APP_VERSION,
+                "latest": latest,
+                "download_url": data.get("download_url", ""),
+                "changelog": data.get("changelog", ""),
+            }
+            if has_update:
+                result["message"] = f"发现新版本: {latest}"
+            else:
+                result["message"] = "当前已是最新版本"
+            return result
+        except Exception as e:
+            log.error(f"检查更新失败: {e}")
+            return {"success": False, "message": "网络请求失败，请稍后重试"}
+
     def redeem_theme_code(self, code):
         # 校验兑换口令并解锁对应的隐藏主题。
         return self._theme_unlock.redeem_theme_code(code)
+
+    def redeem_code(self, code):
+        """向服务器提交兑换码验证，成功后执行对应功能"""
+        import requests
+        tm = get_telemetry_manager()
+        if not tm or not tm.report_url:
+            return {"success": False, "message": "遥测服务未配置"}
+
+        redeem_url = resolve_related_endpoint(tm.report_url, "/redeem")
+        try:
+            machine_id = tm.get_machine_id()
+            resp = requests.post(
+                redeem_url,
+                json={
+                    "code": str(code or "").strip(),
+                    "machine_id": machine_id,
+                },
+                headers=build_client_auth_headers(
+                    redeem_url,
+                    method="POST",
+                    machine_id=machine_id,
+                    user_agent=f"AimerWT-Client/{tm.app_version}",
+                ),
+                timeout=10,
+            )
+            data = resp.json()
+            if resp.status_code == 200 and data.get("status") == "success":
+                # 处理服务端返回的指令
+                cmd = data.get("command")
+                if cmd:
+                    self.on_user_command(json.dumps(cmd) if isinstance(cmd, dict) else str(cmd))
+                return {"success": True, "message": data.get("message", "兑换成功！")}
+            else:
+                return {"success": False, "message": data.get("error", "兑换失败")}
+        except Exception as e:
+            log.error(f"兑换码请求失败: {e}")
+            return {"success": False, "message": "网络请求失败，请稍后重试"}
 
     def reset_unlocked_themes(self):
         # 清空已解锁的隐藏主题，并回退到默认主题。
@@ -3959,6 +5682,7 @@ class AppApi:
             res = self._sights_mgr.scan_sights(
                 force_refresh=force_refresh, default_cover_path=default_cover_path
             )
+            self._apply_resource_display_names("sights", res)
             if self._perf_enabled and t0 is not None:
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 log.debug(f"[PERF] get_sights_list {dt_ms:.1f}ms items={len(res.get('items') or [])}")
@@ -3967,10 +5691,37 @@ class AppApi:
             log.error(f"扫描炮镜失败: {e}")
             return {"exists": False, "items": []}
 
+    def refresh_sights_async(self, opts=None):
+        """后台刷新炮镜列表，完成后推送到前端。"""
+        force_refresh = False
+        if isinstance(opts, dict):
+            force_refresh = bool(opts.get("force_refresh"))
+
+        def _worker():
+            try:
+                default_cover_path = WEB_DIR / "assets" / "card_image_small.png"
+                res = self._sights_mgr.scan_sights(
+                    force_refresh=force_refresh,
+                    default_cover_path=default_cover_path
+                )
+                self._apply_resource_display_names("sights", res)
+                if self._window:
+                    js_data = json.dumps(res, ensure_ascii=False)
+                    self._window.evaluate_js(f"if(app.onSightsListReady) app.onSightsListReady({js_data})")
+            except Exception as e:
+                log.error(f"后台刷新炮镜库失败: {e}")
+                if self._window:
+                    fallback = json.dumps({"exists": False, "items": []}, ensure_ascii=False)
+                    self._window.evaluate_js(f"if(app.onSightsListReady) app.onSightsListReady({fallback})")
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     def rename_sight(self, old_name, new_name):
         # 重命名 UserSights 下的炮镜文件夹。
         try:
             self._sights_mgr.rename_sight(old_name, new_name)
+            self._move_resource_display_name("sights", old_name, new_name)
             return {"success": True}
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -3986,6 +5737,40 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": str(e)}
 
+    def open_sight_folder_by_name(self, sight_name):
+        try:
+            ok = self._sights_mgr.open_sight_folder(sight_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.disable_sight(sight_name)
+            if result.get("success"):
+                self._move_resource_display_name("sights", sight_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.enable_sight(sight_name)
+            if result.get("success"):
+                self._move_resource_display_name("sights", sight_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_sight(self, sight_name):
+        try:
+            result = self._sights_mgr.delete_sight(sight_name)
+            if result.get("success"):
+                self._delete_resource_display_name("sights", sight_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
     def import_sights_zip_dialog(self):
         # 打开文件选择对话框选择炮镜 ZIP 并触发导入流程。
         if self._is_busy:
@@ -3996,7 +5781,7 @@ class AppApi:
             log.warning("请先设置有效的 UserSights 路径")
             return False
 
-        file_types = ("Zip Files (*.zip)", "All files (*.*)")
+        file_types = ("Archive Files (*.zip;*.rar;*.7z)", "All files (*.*)")
         result = self._window.create_file_dialog(
             webview.FileDialog.OPEN, allow_multiple=False, file_types=file_types
         )
@@ -4007,8 +5792,88 @@ class AppApi:
         self.import_sights_zip_from_path(zip_path)
         return True
 
+    def preview_sight_import(self, file_path, options=None):
+        # 返回炮镜导入预检信息，前端可据此展示确认内容。
+        try:
+            return self._sights_mgr.preview_sight_import(
+                file_path,
+                options=options if isinstance(options, dict) else {},
+            )
+        except Exception as e:
+            log.error(f"炮镜导入预检失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def select_sight_import_file(self):
+        # 选择单个炮镜文件，支持 .blk 与压缩包，实际安装由 import_sight_file_from_path 处理。
+        if not self._sights_mgr.get_usersights_path():
+            return {"success": False, "msg": "请先设置有效的 UserSights 路径"}
+        try:
+            file_types = ("Sight Files (*.blk;*.zip;*.rar;*.7z)", "All files (*.*)")
+            result = self._window.create_file_dialog(
+                webview.FileDialog.OPEN, allow_multiple=False, file_types=file_types
+            )
+            if not result or len(result) == 0:
+                return {"success": False, "cancelled": True}
+            return {"success": True, "path": result[0]}
+        except Exception as e:
+            log.error(f"选择炮镜文件失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def import_sight_file_from_path(self, file_path, options=None):
+        # 安装 .blk 或炮镜压缩包到 UserSights，并将进度同步到前端加载组件。
+        if self._is_busy:
+            log.warning("另一个任务正在进行中，请稍候...")
+            return False
+
+        if not self._sights_mgr.get_usersights_path():
+            log.warning("请先设置有效的 UserSights 路径")
+            return False
+
+        sight_path = str(file_path)
+        self._is_busy = True
+
+        if self._window:
+            self._show_loading_i18n("loading.sight.installing_named", {"name": Path(sight_path).name})
+
+        def _run():
+            try:
+                result = self._sights_mgr.import_sight_file(
+                    sight_path,
+                    options=options if isinstance(options, dict) else {},
+                    progress_callback=self.update_loading_ui,
+                )
+                if self._window:
+                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights({manual:true})")
+                    payload = self._runtime_loading_i18n_payload(result.get("message") or "炮镜导入完成")
+                    if payload:
+                        self._update_loading_i18n(100, payload["key"], payload["params"])
+                    else:
+                        self.update_loading_ui(100, result.get("message") or "炮镜导入完成")
+            except FileExistsError as e:
+                log.warning(f"{e}")
+                if self._window:
+                    msg_js = json.dumps(str(e), ensure_ascii=False)
+                    self._window.evaluate_js(
+                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
+                    )
+            except Exception as e:
+                log.error(f"炮镜导入失败: {e}")
+                if self._window:
+                    self.update_loading_ui(100, str(e) or "炮镜导入失败")
+            finally:
+                self._is_busy = False
+
+        t = threading.Thread(target=_run)
+        t.daemon = True
+        t.start()
+        return True
+
     def import_sights_zip_from_path(self, zip_path):
         # 导入指定路径的炮镜 ZIP 到 UserSights，并将进度同步到前端加载组件。
+        return self.import_sight_file_from_path(zip_path, {"conflict_strategy": "backup"})
+
+    def _legacy_import_sights_zip_from_path(self, zip_path):
+        # 旧 ZIP/RAR/7Z 导入流程保留给回退排查，常规入口使用 import_sight_file_from_path。
         if self._is_busy:
             log.warning("另一个任务正在进行中，请稍候...")
             return False
@@ -4021,10 +5886,7 @@ class AppApi:
         self._is_busy = True
 
         if self._window:
-            msg_js = json.dumps(f"炮镜解压: {Path(zip_path).name}", ensure_ascii=False)
-            self._window.evaluate_js(
-                f"if(window.MinimalistLoading) MinimalistLoading.show(false, {msg_js})"
-            )
+            self._show_loading_i18n("loading.sight.extracting_named", {"name": Path(zip_path).name})
 
         def _run():
             try:
@@ -4033,10 +5895,7 @@ class AppApi:
                 )
                 if self._window:
                     self._window.evaluate_js("if(app.refreshSights) app.refreshSights()")
-                    msg_js = json.dumps("炮镜导入完成", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.sight.import_done")
             except FileExistsError as e:
                 log.warning(f"{e}")
                 if self._window:
@@ -4047,10 +5906,7 @@ class AppApi:
             except Exception as e:
                 log.error(f"炮镜导入失败: {e}")
                 if self._window:
-                    msg_js = json.dumps("炮镜导入失败", ensure_ascii=False)
-                    self._window.evaluate_js(
-                        f"if(window.MinimalistLoading) MinimalistLoading.update(100, {msg_js})"
-                    )
+                    self._update_loading_i18n(100, "loading.sight.import_failed")
             finally:
                 self._is_busy = False
 
@@ -4171,10 +6027,12 @@ class AppApi:
 
     # ==================== 任务库 / 模型库 / 机库 卡片管理 API ====================
 
-    def get_tasks_list(self):
+    def get_tasks_list(self, opts=None):
         """扫描任务库目录，返回子文件夹列表供前端卡片展示。"""
         try:
-            items = self._task_mgr.scan_items()
+            force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
+            items = self._task_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("tasks", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取任务列表失败: {e}")
@@ -4184,6 +6042,7 @@ class AppApi:
         """重命名任务库中的子文件夹。"""
         try:
             self._task_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("tasks", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
@@ -4202,10 +6061,46 @@ class AppApi:
             log.error(f"任务封面更新异常: {e}")
             return {"success": False, "msg": str(e)}
 
-    def get_models_list(self):
+    def open_task_folder_by_name(self, item_name):
+        try:
+            ok = self._task_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_task(self, item_name):
+        try:
+            result = self._task_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("tasks", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_task(self, item_name):
+        try:
+            result = self._task_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("tasks", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_task(self, item_name):
+        try:
+            result = self._task_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("tasks", item_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def get_models_list(self, opts=None):
         """扫描模型库目录，返回子文件夹列表供前端卡片展示。"""
         try:
-            items = self._model_mgr.scan_items()
+            force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
+            items = self._model_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("models", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取模型列表失败: {e}")
@@ -4215,6 +6110,7 @@ class AppApi:
         """重命名模型库中的子文件夹。"""
         try:
             self._model_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("models", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
@@ -4233,10 +6129,46 @@ class AppApi:
             log.error(f"模型封面更新异常: {e}")
             return {"success": False, "msg": str(e)}
 
-    def get_hangar_list(self):
+    def open_model_folder_by_name(self, item_name):
+        try:
+            ok = self._model_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_model(self, item_name):
+        try:
+            result = self._model_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("models", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_model(self, item_name):
+        try:
+            result = self._model_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("models", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_model(self, item_name):
+        try:
+            result = self._model_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("models", item_name)
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def get_hangar_list(self, opts=None):
         """扫描机库目录，返回子文件夹列表供前端卡片展示。"""
         try:
-            items = self._hangar_mgr.scan_items()
+            force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
+            items = self._hangar_mgr.scan_items(force_refresh=force_refresh)
+            self._apply_resource_display_names("hangar", items)
             return {"valid": True, "items": items}
         except Exception as e:
             log.error(f"获取机库列表失败: {e}")
@@ -4246,6 +6178,7 @@ class AppApi:
         """重命名机库中的子文件夹。"""
         try:
             self._hangar_mgr.rename_item(old_name, new_name)
+            self._move_resource_display_name("hangar", old_name, new_name)
             return {"success": True}
         except (ValueError, FileExistsError, FileNotFoundError) as e:
             return {"success": False, "msg": str(e)}
@@ -4262,6 +6195,40 @@ class AppApi:
             return {"success": False, "msg": str(e)}
         except Exception as e:
             log.error(f"机库封面更新异常: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def open_hangar_folder_by_name(self, item_name):
+        try:
+            ok = self._hangar_mgr.open_item_folder(item_name)
+            return {"success": bool(ok)}
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def disable_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.disable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("hangar", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def enable_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.enable_item(item_name)
+            if result.get("success"):
+                self._move_resource_display_name("hangar", item_name, result.get("name"))
+            return result
+        except Exception as e:
+            return {"success": False, "msg": str(e)}
+
+    def delete_hangar(self, item_name):
+        try:
+            result = self._hangar_mgr.delete_item(item_name)
+            if result.get("success"):
+                self._delete_resource_display_name("hangar", item_name)
+            return result
+        except Exception as e:
             return {"success": False, "msg": str(e)}
 
 
@@ -4455,7 +6422,7 @@ def main() -> int:
     # 创建窗口实例（x/y 指定启动位置）
     try:
         window = webview.create_window(
-            title="Aimer WT v2 Beta",
+            title="Aimer WT V3 Beta",
             url=str(index_html),
             js_api=api,
             width=window_width,
@@ -4478,91 +6445,236 @@ def main() -> int:
     # 绑定窗口对象到桥接层
     api.set_window(window)
 
-    # TODO: 当前拖放导入在部分压缩包场景下仍可能阻塞，需要单独治理后再启用。
     def _bind_drag_drop(win):
         # 绑定拖拽投放事件，用于在特定页面接收文件拖入并触发导入流程。
         try:
             from webview.dom import DOMEventHandler
         except Exception:
             log.debug("DOMEventHandler 不可用，略过拖放绑定")
+            record_diagnostic_event("drag_drop", "dom_handler_unavailable", "warning", "DOMEventHandler 不可用")
             return
 
-        def on_drop(e):
-            def _async_processor():
-                try:
-                    win.evaluate_js("if(window.app && app.hideDropOverlay) app.hideDropOverlay()")
+        def _extract_drop_paths(e):
+            try:
+                data_tx = e.get("dataTransfer") if isinstance(e, dict) else {}
+                files = data_tx.get("files") if isinstance(data_tx, dict) else []
+            except Exception:
+                files = []
 
-                    try:
-                        active_page = win.evaluate_js("(document.querySelector('.page.active')||{}).id || ''")
-                    except Exception:
-                        active_page = ""
+            full_paths = []
+            for file_info in files:
+                if not isinstance(file_info, dict):
+                    continue
+                raw_path = (
+                    file_info.get("pywebviewFullPath")
+                    or file_info.get("path")
+                    or file_info.get("_path")
+                )
+                if raw_path:
+                    full_paths.append(str(raw_path))
+            return files, full_paths
+
+        def _read_drop_context():
+            context = {"active_page": "", "resource_view": "skins", "handled_at": 0}
+            try:
+                raw = win.evaluate_js(
+                    """
+                    (function(){
+                        var activeEl = document.querySelector('.page.active') || {};
+                        var navEl = document.querySelector('#page-camo .resource-nav-item.active');
+                        var resourceView = (navEl && navEl.dataset) ? (navEl.dataset.target || 'skins') : 'skins';
+                        return JSON.stringify({
+                            active_page: activeEl.id || '',
+                            resource_view: resourceView,
+                            handled_at: Number(window.__resource_drag_drop_handled_at || 0)
+                        });
+                    })()
+                    """
+                )
+                if isinstance(raw, str):
+                    parsed = json.loads(raw)
+                elif isinstance(raw, dict):
+                    parsed = raw
+                else:
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    context.update(parsed)
+            except Exception as ex:
+                record_diagnostic_event(
+                    "drag_drop",
+                    "context_read_failed",
+                    "warning",
+                    "读取拖入页面状态失败",
+                    error=str(ex),
+                )
+            return context
+
+        def _show_backend_drop_warning(message):
+            try:
+                msg_js = json.dumps(str(message), ensure_ascii=False)
+                win.evaluate_js(
+                    f"if(window.app && app.showAlert) app.showAlert('提示', {msg_js}, 'warn')"
+                )
+            except Exception:
+                pass
+
+        def _import_drag_archive(active_page, resource_view, archive_path):
+            if active_page == "page-lib":
+                api.import_voice_zip_from_path(archive_path)
+                return "voice"
+            if active_page == "page-camo":
+                if resource_view == "sights":
+                    api.import_sight_file_from_path(archive_path, {"conflict_strategy": "backup"})
+                    return "sights"
+                api.import_skin_zip_from_path(archive_path)
+                return "skins"
+            if active_page == "page-sight":
+                api.import_sight_file_from_path(archive_path, {"conflict_strategy": "backup"})
+                return "sights"
+            return ""
+
+        def on_drop(e):
+            received_perf = time.perf_counter()
+            files, full_paths = _extract_drop_paths(e)
+            record_diagnostic_event(
+                "drag_drop",
+                "drop_received",
+                "info",
+                "收到拖入事件",
+                file_count=len(files),
+                path_count=len(full_paths),
+                elapsed_ms=round((time.perf_counter() - received_perf) * 1000, 2),
+            )
+
+            if not full_paths:
+                record_diagnostic_event(
+                    "drag_drop",
+                    "path_missing",
+                    "warning",
+                    "后端拖入事件未返回文件路径",
+                    file_count=len(files),
+                )
+                threading.Thread(
+                    target=_show_backend_drop_warning,
+                    args=("当前环境未能读取拖入文件路径，请使用导入按钮。",),
+                    name="DragDropMissingPathNotice",
+                    daemon=True,
+                ).start()
+                return
+
+            def _async_processor(paths):
+                try:
+                    context = _read_drop_context()
+                    handled_at = float(context.get("handled_at") or 0)
+                    if handled_at and (time.time() * 1000 - handled_at) < 1500:
+                        record_diagnostic_event(
+                            "drag_drop",
+                            "skip_frontend_handled",
+                            "info",
+                            "前端已处理拖入事件",
+                        )
+                        return
+
+                    active_page = str(context.get("active_page") or "")
+                    resource_view = str(context.get("resource_view") or "skins")
 
                     allowed_pages = ["page-home", "page-lib", "page-camo", "page-sight"]
                     if not active_page or active_page not in allowed_pages:
+                        record_diagnostic_event(
+                            "drag_drop",
+                            "skip_inactive_page",
+                            "info",
+                            "当前页面不处理拖入文件",
+                            active_page=active_page,
+                        )
                         return
 
                     if active_page == "page-home":
-                        win.evaluate_js("app.switchTab('lib')")
                         active_page = "page-lib"
 
-                    # 提取文件路径
-                    try:
-                        data_tx = e.get("dataTransfer") or {}
-                        files = data_tx.get("files") or []
-                    except Exception:
-                        files = []
-
-                    full_paths = []
-                    for f in files:
-                        p = f.get("pywebviewFullPath")
-                        if p:
-                            full_paths.append(str(p))
-
-                    if not full_paths:
-                        return
-
-                    archive_exts = (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".bank")
-                    zip_files = [p for p in full_paths if p.lower().endswith(archive_exts)]
-                    if not zip_files:
-                        return
-
-                    zp = zip_files[0]
-
+                    voice_archive_exts = (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".bank")
+                    resource_archive_exts = (".zip", ".rar", ".7z")
+                    sight_file_exts = (".blk", ".zip", ".rar", ".7z")
                     if active_page == "page-lib":
-                        api.import_voice_zip_from_path(zp)
-                    elif active_page == "page-camo":
-                        try:
-                            res_view = win.evaluate_js(
-                                "(document.querySelector('#page-camo .resource-nav-item.active')||{}).dataset.target || 'skins'"
-                            )
-                        except Exception:
-                            res_view = "skins"
+                        archive_exts = voice_archive_exts
+                    elif active_page == "page-sight" or (active_page == "page-camo" and resource_view == "sights"):
+                        archive_exts = sight_file_exts
+                    else:
+                        archive_exts = resource_archive_exts
+                    archive_files = [p for p in paths if p.lower().endswith(archive_exts)]
+                    if not archive_files:
+                        record_diagnostic_event(
+                            "drag_drop",
+                            "unsupported_file",
+                            "warning",
+                            "拖入文件格式不在当前页面允许列表内",
+                            active_page=active_page,
+                            resource_view=resource_view,
+                            paths=paths,
+                        )
+                        return
 
-                        if res_view == "sights":
-                            api.import_sights_zip_from_path(zp)
-                        else:
-                            api.import_skin_zip_from_path(zp)
-                    elif active_page == "page-sight":
-                        api.import_sights_zip_from_path(zp)
+                    if active_page == "page-sight" or (active_page == "page-camo" and resource_view == "sights"):
+                        record_diagnostic_event(
+                            "drag_drop",
+                            "skip_sight_requires_frontend_options",
+                            "info",
+                            "炮镜拖入需要前端弹窗确认导入目标",
+                            active_page=active_page,
+                            resource_view=resource_view,
+                        )
+                        threading.Thread(
+                            target=_show_backend_drop_warning,
+                            args=("请在炮镜库区域拖入文件，并在弹窗中选择导入位置。",),
+                            name="DragDropSightTargetNotice",
+                            daemon=True,
+                        ).start()
+                        return
+
+                    archive_path = archive_files[0]
+                    target_type = _import_drag_archive(active_page, resource_view, archive_path)
+                    record_diagnostic_event(
+                        "drag_drop",
+                        "import_dispatched",
+                        "info",
+                        "拖入文件已交给导入流程",
+                        active_page=active_page,
+                        resource_view=resource_view,
+                        target_type=target_type,
+                        archive_path=archive_path,
+                    )
 
                 except Exception as ex:
+                    record_diagnostic_event(
+                        "drag_drop",
+                        "drop_process_failed",
+                        "error",
+                        "拖拽处理发生异常",
+                        error=str(ex),
+                    )
                     log.error(f"拖拽处理发生异常: {ex}", exc_info=True)
 
-            threading.Thread(target=_async_processor, daemon=True).start()
+            threading.Thread(
+                target=_async_processor,
+                args=(full_paths,),
+                name="DragDropImportDispatch",
+                daemon=True,
+            ).start()
 
         try:
             win.dom.document.events.drop += DOMEventHandler(on_drop, True, False)
         except Exception:
             log.debug("绑定拖放事件失败", exc_info=True)
+            record_diagnostic_event("drag_drop", "bind_failed", "warning", "绑定拖放事件失败")
             return
+        try:
+            win.evaluate_js("window.__resource_backend_drop_ready = true")
+            record_diagnostic_event("drag_drop", "backend_ready", "info", "后端拖入兜底已就绪")
+        except Exception:
+            log.debug("标记拖放后端状态失败", exc_info=True)
+            record_diagnostic_event("drag_drop", "ready_mark_failed", "warning", "标记拖放后端状态失败")
 
     def _on_start(win):
-        # TODO 需要优化，拖放压缩包时大概率卡死
-        # try:
-        #     _bind_drag_drop(win)
-        # except Exception:
-        #     log.exception("_bind_drag_drop 失败")
-
         # 部分 GUI 后端可能忽略 create_window 的 x/y；启动后补一次置中
         try:
             if start_x is not None and start_y is not None and hasattr(win, "move"):
@@ -4580,13 +6692,15 @@ def main() -> int:
 
     # 启动
     icon_path = str(WEB_DIR / "assets" / "logo.ico")
+    # WebKitGTK (Linux) 下 file:// 协议会阻止 JS 模块加载，需启用 HTTP 服务
+    use_http_server = sys.platform != "win32"
     try:
         # 尝试使用 edgechromium 内核（性能更好）
         webview.start(
             _on_start,
             window,
             debug=False,
-            http_server=False,
+            http_server=use_http_server,
             gui="edgechromium",
             icon=icon_path,
         )
@@ -4595,13 +6709,13 @@ def main() -> int:
         log.error(f"Edge Chromium 启动失败，尝试默认模式: {e}")
 
         # 在 Windows 上，若缺少 WebView2 Runtime，pywebview 可能回退到 MSHTML(IE)，
-        # 因此在侦测到 WebView2 不存在时，优先提示使用者安装，而不是静默降级。
+        # 因此在侦测到 WebView2 不存在时，优先提示用户安装，而不是静默降级。
         if sys.platform == "win32" and not _windows_has_webview2_runtime():
             allow_fallback = bool(getattr(cli, "allow_fallback", False))
             if not allow_fallback:
                 msg = (
                     "侦测到系统未安装 Microsoft Edge WebView2 Runtime。\n\n"
-                    "本程式需要 WebView2 才能正常显示与互动（否则会回退到旧版 IE 内核，导致一些意外的错误）。\n\n"
+                    "本程序需要 WebView2 才能正常显示与交互（否则会回退到旧版 IE 内核，导致一些意外的错误）。\n\n"
                     "请安装 WebView2 Evergreen Runtime 后再启动：\n"
                     "https://developer.microsoft.com/microsoft-edge/webview2/\n\n"
                     "（如仍想尝试旧模式启动，可使用启动参数 --allow-fallback）"
@@ -4611,7 +6725,7 @@ def main() -> int:
 
         try:
             # 降级启动
-            webview.start(_on_start, window, debug=False, http_server=False, icon=icon_path)
+            webview.start(_on_start, window, debug=False, http_server=use_http_server, icon=icon_path)
             return 0
         except Exception as e2:
             log.exception("webview 启动失败（含降级）")

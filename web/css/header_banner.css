@@ -2,13 +2,16 @@
 #header_banner_slot {
     display: none;
     align-items: center;
-    max-width: 160px;
+    justify-content: flex-start;
     height: 100%;
     overflow: hidden;
-    margin-left: -18px;
+    clip-path: inset(0);
+    min-width: 0;
+    box-sizing: border-box;
     -webkit-app-region: no-drag;
     app-region: no-drag;
-    position: relative;
+    position: absolute;
+    top: 0;
 }
 
 #header_banner_slot.has-content {
@@ -31,6 +34,7 @@
     position: relative;
     user-select: none;
     max-width: 100%;
+    min-width: 0;
 }
 
 .header_banner:hover {
@@ -53,9 +57,13 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
+    position: relative;
     transform: translateY(3px);
-    -webkit-mask-image: linear-gradient(to right, transparent 0%, black 8%, black 85%, transparent 100%);
-    mask-image: linear-gradient(to right, transparent 0%, black 8%, black 85%, transparent 100%);
+}
+
+.header_banner_text_clip.is-scrolling {
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, black 2.5%, black 97.5%, transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0%, black 2.5%, black 97.5%, transparent 100%);
 }
 
 .header_banner_text {
@@ -144,8 +152,9 @@
     transform: none;
 }
 
-/* 更新提示的脉冲圆点 */
+/* 圆点节点暂时保留，但不参与显示 */
 .header_banner_dot {
+    display: none;
     width: 6px;
     height: 6px;
     border-radius: 50%;
@@ -283,11 +292,11 @@
     z-index: 9999;
     pointer-events: none;
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translate(-50%, -4px);
     transition: opacity 0.2s, transform 0.2s;
 }
 
 .header_banner_tooltip.visible {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate(-50%, 0);
 }

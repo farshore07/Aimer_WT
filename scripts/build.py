@@ -1,9 +1,10 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os
 import shutil
 import hashlib
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -11,6 +12,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logger import get_logger
 
 log = get_logger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+EXE_DISPLAY_NAME = "AimerWT V3 Beta"
+APP_VERSION = "3.0.0"
+APP_VERSION_TUPLE = (3, 0, 0, 0)
+
+
+REQUIRED_BUILD_ENV_VARS = (
+    "REPORT_URL",
+    "TELEMETRY_CLIENT_SECRET",
+    "TELEMETRY_SALT",
+)
 
 
 def calculate_checksum(file_path, algorithm='sha256'):
@@ -27,20 +40,23 @@ def clean_build_artifacts():
     log.info("🧹 正在清理临时文件...")
 
     # 删除 build 文件夹
-    if os.path.exists('build'):
+    build_dir = PROJECT_ROOT / "build"
+    if build_dir.exists():
         try:
-            shutil.rmtree('build')
+            shutil.rmtree(build_dir)
             log.info("   - 已删除 build 文件夹")
         except Exception as e:
             log.warning(f"   ! 删除 build 文件夹失败: {e}")
 
     # 删除 spec 文件
-    if os.path.exists('WT_Aimer_Voice.spec'):
-        try:
-            os.remove('WT_Aimer_Voice.spec')
-            log.info("   - 已删除 spec 文件")
-        except Exception as e:
-            log.warning(f"   ! 删除 spec 文件失败: {e}")
+    for spec_name in ('WT_Aimer_Voice.spec', 'AimerWT V3 Beta.spec'):
+        spec_path = PROJECT_ROOT / spec_name
+        if spec_path.exists():
+            try:
+                spec_path.unlink()
+                log.info(f'   - 已删除 spec 文件: {spec_name}')
+            except Exception as e:
+                log.warning(f'   ! 删除 spec 文件失败: {e}')
 
 
 def load_dotenv(path=".env"):
@@ -57,81 +73,197 @@ def load_dotenv(path=".env"):
             print(f"   ! 加载 .env 失败: {e}")
 
 
+def copy_tracked_web_files(target_dir: Path) -> int:
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", "web"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tracked_files = [item for item in result.stdout.split("\0") if item]
+    if not tracked_files:
+        raise RuntimeError("未找到 Git 跟踪的 web 文件")
+
+    copied = 0
+    for rel_path in tracked_files:
+        source = PROJECT_ROOT / rel_path
+        if not source.is_file():
+            continue
+        web_rel_path = Path(rel_path).relative_to("web")
+        destination = target_dir / web_rel_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied += 1
+    return copied
+
+
+def write_version_info(version_file: Path) -> None:
+    version_file.write_text(
+        f"""# UTF-8
+# PyInstaller Windows 版本资源文件
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={APP_VERSION_TUPLE},
+    prodvers={APP_VERSION_TUPLE},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'080404B0',
+          [
+            StringStruct(u'CompanyName', u'Aimer'),
+            StringStruct(u'FileDescription', u'{EXE_DISPLAY_NAME}'),
+            StringStruct(u'FileVersion', u'{APP_VERSION}'),
+            StringStruct(u'InternalName', u'{EXE_DISPLAY_NAME}'),
+            StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Aimer. All rights reserved.'),
+            StringStruct(u'OriginalFilename', u'{EXE_DISPLAY_NAME}.exe'),
+            StringStruct(u'ProductName', u'{EXE_DISPLAY_NAME}'),
+            StringStruct(u'ProductVersion', u'{APP_VERSION}'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [0x0804, 1200])])
+  ]
+)
+""",
+        encoding="utf-8",
+    )
+
+
+def require_build_env() -> dict[str, str]:
+    """校验生产打包所需的关键环境变量。"""
+    missing = []
+    values: dict[str, str] = {}
+    for key in REQUIRED_BUILD_ENV_VARS:
+        value = os.environ.get(key, "").strip()
+        if not value:
+            missing.append(key)
+            continue
+        values[key] = value
+
+    if missing:
+        raise RuntimeError(
+            "缺少必填环境变量: " + ", ".join(missing)
+        )
+    return values
+
+
 def build_exe():
     """执行打包任务"""
     log.info("🚀 开始打包程序...")
 
     # 确保 dist 目录存在 (PyInstaller 会自动创建，但为了保险)
-    dist_dir = Path("../dist")
+    dist_dir = PROJECT_ROOT / "dist"
+    dist_dir.mkdir(exist_ok=True)
 
-    load_dotenv()
+    load_dotenv(PROJECT_ROOT / ".env")
 
-    # 在打包前，从打包环境的环境变量中读取加密salt和遥测url
-    # 如果没有设置，则使用开发默认值
-    salt = os.environ.get("TELEMETRY_SALT", "DEVELOPMENT_SALT")
-    url = os.environ.get("REPORT_URL", "https://api.example.com/telemetry")
+    try:
+        build_env = require_build_env()
+    except RuntimeError as exc:
+        log.error(f"[X] 打包终止: {exc}")
+        sys.exit(1)
+
+    # 在打包前，从打包环境的环境变量中读取遥测配置。
+    salt = build_env["TELEMETRY_SALT"]
+    url = build_env["REPORT_URL"]
+    client_secret = build_env["TELEMETRY_CLIENT_SECRET"]
 
     # 生成临时的 app_secrets.py 供编译使用
     # 注意：该文件已被加入 .gitignore，不会被上传到 GitHub
-    secrets_file = Path("../app_secrets.py")
+    secrets_file = PROJECT_ROOT / "app_secrets.py"
     with open(secrets_file, "w", encoding="utf-8") as f:
         f.write("# 由 build.py 自动生成 - 不要把它提交到github\n")
         f.write(f"TELEMETRY_SALT = {repr(salt)}\n")
         f.write(f"REPORT_URL = {repr(url)}\n")
+        f.write(f"TELEMETRY_CLIENT_SECRET = {repr(client_secret)}\n")
 
     # Os specific separator
     sep = ';' if os.name == 'nt' else ':'
 
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
-        "--noconsole",
-        "--onefile",
-        "--add-data", f"web{sep}web",  # 将 web 文件夹打包到 exe 内部的 web 目录
-        "--name", "WT_Aimer_Voice",
-        "--clean",  # 清理 PyInstaller 缓存
-        "main.py"
-    ]
+    with tempfile.TemporaryDirectory(prefix="aimerwt_web_pack_") as tmp_dir:
+        web_pack_dir = Path(tmp_dir) / "web"
+        copied_web_files = copy_tracked_web_files(web_pack_dir)
+        log.info(f"   - 已准备 web 打包文件: {copied_web_files} 个")
+        version_file = Path(tmp_dir) / "version_info.txt"
+        write_version_info(version_file)
 
-    # 可选打包 tools 目录（例如 vgmstream-cli 及其依赖）
-    if os.path.isdir("tools"):
-        cmd.extend(["--add-data", f"tools{sep}tools"])
-    else:
-        log.warning("未发现 tools 目录，跳过工具文件打包")
+        cmd = [
+            sys.executable, "-m", "PyInstaller",
+            "--noconsole",
+            "--onefile",
+            "--add-data", f"{web_pack_dir}{sep}web",
+            "--name", EXE_DISPLAY_NAME,
+            "--clean",
+            # hidden imports：确保 pywebview 各后端、pystray、pythonnet 均被打包
+            "--hidden-import", "webview.platforms.winforms",
+            "--hidden-import", "webview.platforms.cef",
+            "--hidden-import", "webview.platforms.gtk",
+            "--hidden-import", "clr",
+            "--hidden-import", "clr_loader",
+            "--hidden-import", "pystray._win32",
+            "--hidden-import", "PIL._imaging",
+            "--hidden-import", "PIL.Image",
+            "--hidden-import", "PIL.IcoImagePlugin",
+            "--hidden-import", "requests",
+            "--hidden-import", "certifi",
+            "--hidden-import", "charset_normalizer",
+            "--hidden-import", "bottle",
+            "--collect-all", "webview",
+            "--collect-all", "pystray",
+            "main.py"
+        ]
 
-    # Add icon if exists and on Windows/Mac (Linux mostly ignores or handles differently)
-    if os.name == 'nt':
-        cmd.extend(["--icon", "web/assets/logo.ico"])
-    else:
-        # Strip symbols on Linux/Mac to reduce size
-        cmd.append("--strip")
+        # 可选打包 tools 目录（例如 vgmstream-cli 及其依赖）
+        tools_dir = PROJECT_ROOT / "tools"
+        if tools_dir.is_dir():
+            cmd.extend(["--add-data", f"{tools_dir}{sep}tools"])
+        else:
+            log.warning("未发现 tools 目录，跳过工具文件打包")
 
-    log.info(f"执行命令: {' '.join(cmd)}")
+        if os.name == 'nt':
+            cmd.extend(["--icon", str(PROJECT_ROOT / "web" / "assets" / "logo.ico")])
+            cmd.extend(["--version-file", str(version_file)])
+            log.info(f"已生成版本资源文件: {version_file}")
+        else:
+            cmd.append("--strip")
 
-    try:
-        # shell=False ensures arguments are passed correctly on Linux without manual escaping
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if result.stdout:
-            log.debug(result.stdout)
-        if result.stderr:
-            log.debug(result.stderr)
-    except subprocess.CalledProcessError as e:
-        log.error(f"[X] 打包失败！错误: {e}", exc_info=True)
-        log.error("--- PyInstaller stdout ---")
-        if e.stdout:
-            log.error(e.stdout)
-        log.error("--- PyInstaller stderr ---")
-        if e.stderr:
-            log.error(e.stderr)
-        sys.exit(1)
-    except Exception as e:
-        log.exception(f"[X] 打包失败！错误: {e}")
-        sys.exit(1)
-    else:
-        exe_name = "WT_Aimer_Voice.exe" if os.name == 'nt' else "WT_Aimer_Voice"
-        exe_path = Path("../dist") / exe_name
-        log.info("[OK] 打包成功！")
-        log.info(f"输出文件: {exe_path}")
-        return True
+        log.info(f"执行命令: {' '.join(cmd)}")
+
+        try:
+            # shell=False ensures arguments are passed correctly on Linux without manual escaping
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, capture_output=True, text=True)
+            if result.stdout:
+                log.debug(result.stdout)
+            if result.stderr:
+                log.debug(result.stderr)
+        except subprocess.CalledProcessError as e:
+            log.error(f"[X] 打包失败！错误: {e}", exc_info=True)
+            log.error("--- PyInstaller stdout ---")
+            if e.stdout:
+                log.error(e.stdout)
+            log.error("--- PyInstaller stderr ---")
+            if e.stderr:
+                log.error(e.stderr)
+            sys.exit(1)
+        except Exception as e:
+            log.exception(f"[X] 打包失败！错误: {e}")
+            sys.exit(1)
+        else:
+            exe_name = f"{EXE_DISPLAY_NAME}.exe" if os.name == 'nt' else EXE_DISPLAY_NAME
+            exe_path = dist_dir / exe_name
+            log.info("[OK] 打包成功！")
+            log.info(f"输出文件: {exe_path}")
+            return True
 
 
 def main():
@@ -140,9 +272,8 @@ def main():
         return
 
     # 2. 生成校验文件
-    # Determine exe name based on OS
-    exe_name = "WT_Aimer_Voice.exe" if os.name == 'nt' else "WT_Aimer_Voice"
-    dist_dir = Path(__file__).parent.parent / "dist"
+    exe_name = f"{EXE_DISPLAY_NAME}.exe" if os.name == 'nt' else EXE_DISPLAY_NAME
+    dist_dir = PROJECT_ROOT / "dist"
     exe_path = dist_dir / exe_name
 
     if not exe_path.exists():

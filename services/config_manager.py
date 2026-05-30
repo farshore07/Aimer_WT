@@ -67,10 +67,12 @@ class ConfigManager:
         "sights_path": "",
         "pending_dir": "",
         "library_dir": "",
+        "resource_display_names": {},
         "telemetry_enabled": True,
         "autostart_enabled": False,
         "tray_mode": False,
-        "close_confirm": True
+        "close_confirm": True,
+        "ui_language": ""
     }
 
     def __init__(self):
@@ -226,6 +228,27 @@ class ConfigManager:
             log.warning(f"无效的主题模式: {mode}，使用 Light")
             mode = "Light"
         self.config["theme_mode"] = mode
+        return self.save_config()
+
+    def get_ui_language(self) -> str:
+        """读取当前界面语言。"""
+        val = self.config.get("ui_language", "")
+        return val if val in ("zh_cn", "zh_tw", "en_us", "ru_ru", "de_de") else ""
+
+    def set_ui_language(self, lang: str) -> bool:
+        """
+        更新界面语言并写入 settings.json。
+
+        Args:
+            lang: 界面语言 ("zh_cn" / "zh_tw" / "en_us" / "ru_ru" / "de_de")
+
+        Returns:
+            bool: 是否成功保存
+        """
+        if lang not in ("zh_cn", "zh_tw", "en_us", "ru_ru", "de_de"):
+            log.warning(f"无效的界面语言: {lang}，使用 zh_cn")
+            lang = "zh_cn"
+        self.config["ui_language"] = lang
         return self.save_config()
 
     def get_launch_mode(self) -> str:

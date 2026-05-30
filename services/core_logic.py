@@ -106,15 +106,13 @@ class CoreService:
         # 只在第一次或游戏路径改变时重新初始化
         try:
             if self.manifest_mgr is None or self.manifest_mgr.game_root != self.game_root:
-                log.info(f"[MANIFEST] 创建新的 ManifestManager 实例")
                 self.manifest_mgr = ManifestManager(self.game_root)
-                log.info("已初始化清单管理器")
+                log.info(f"[MANIFEST] 清单管理器已初始化: {self.game_root}")
             else:
-                log.info(f"[MANIFEST] 重新加载清单数据（游戏路径未变）")
                 # 重新加载清单以获取最新数据
                 self.manifest_mgr.manifest = self.manifest_mgr._load_manifest()
-                log.info("已重新加载清单数据")
-            log.info(f"游戏路径校验成功: {path}")
+                log.debug(f"[MANIFEST] 已刷新清单数据: {self.game_root}")
+            log.debug(f"游戏路径校验通过: {path}")
         except Exception as e:
             log.error(f"初始化清单管理器失败: {e}")
             # 清单管理器失败不阻止继续操作
@@ -507,6 +505,8 @@ class CoreService:
                 progress_callback(15, f"共 {total_files_to_copy} 个文件待安装")
 
             total_files = 0
+            failed_files = 0
+            failed_list = []
             # 收集本次安装的目标文件名，用于写入安装清单
             installed_files_record = []
 
@@ -544,12 +544,24 @@ class CoreService:
 
                 except PermissionError as e:
                     log.warning(f"複製文件 {src_file.name} 失败（权限不足）: {e}")
+                    failed_files += 1
+                    failed_list.append(src_file.name)
                 except OSError as e:
                     log.warning(f"複製文件 {src_file.name} 失败: {e}")
+                    failed_files += 1
+                    failed_list.append(src_file.name)
                 except Exception as e:
                     log.warning(f"複製文件 {src_file.name} 失败: {type(e).__name__}: {e}")
+                    failed_files += 1
+                    failed_list.append(src_file.name)
 
-            log.info(f"已成功安装 {total_files} 个文件")
+            log.info(f"已成功安装 {total_files} 个文件，失败 {failed_files} 个")
+
+            if total_files == 0:
+                log.error("所有文件复制均失败，安装未生效")
+                if progress_callback:
+                    progress_callback(100, "安装失败：无文件成功复制")
+                return {"success": False, "total": 0, "failed": failed_files, "failed_list": failed_list}
 
             # 写入安装清单记录（mod -> 文件名列表）
             if self.manifest_mgr and total_files > 0:
@@ -569,19 +581,19 @@ class CoreService:
                 progress_callback(100, "安装完成")
 
             log.info(f"[SUCCESS] [DONE] 安装完成！本次覆盖/新增 {total_files} 个文件。")
-            return True
+            return {"success": True, "total": total_files, "failed": failed_files, "failed_list": failed_list}
 
         except (GamePathError, InstallError) as e:
             log.error(f"安装过程错误: {e}")
             if progress_callback:
                 progress_callback(100, "安装失败")
-            return False
+            return {"success": False, "total": 0, "failed": 0, "failed_list": [], "error": str(e)}
         except Exception as e:
             log.error(f"安装过程严重错误: {type(e).__name__}: {e}")
             log.exception("安装异常详情")
             if progress_callback:
                 progress_callback(100, "安装失败")
-            return False
+            return {"success": False, "total": 0, "failed": 0, "failed_list": [], "error": str(e)}
 
     def uninstall_mod(self, mod_name: str) -> dict:
         """

@@ -4,28 +4,37 @@
 
 功能定位:
 - 扫描游戏目录下的 UserSkins 文件夹，生成前端展示数据。
-- 支援从 ZIP 导入涂装，包含文件类型校验与磁盘空间检查。
+- 支援从 ZIP/RAR/7Z 导入涂装，包含文件类型校验与磁盘空间检查。
 - 提供涂装重命名与封面更新功能。
 
 输入输出:
-- 输入: 游戏路径、涂装 ZIP 路径、封面图片数据、重命名参数。
+- 输入: 游戏路径、涂装压缩包路径、封面图片数据、重命名参数。
 - 输出: 涂装列表字典、导入结果字典、对 UserSkins 目录结构的写入副作用。
 
 错误处理策略:
 - 文件操作使用具体的异常类型（PermissionError、FileNotFoundError 等）
-- ZIP 解压支援路径安全校验和文件类型白名单
+- 压缩包解压支援路径安全校验和文件类型白名单
 - 所有操作记录完整的错误上下文
 """
 import base64
+import hashlib
 import os
+import platform
 import re
 import shutil
+import subprocess
 import time
 import zipfile
 from pathlib import Path
 from typing import Callable, Any
 
+from services.resource_index_cache import ResourceIndexCache
 from utils.logger import get_logger
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 log = get_logger(__name__)
 
@@ -52,12 +61,22 @@ class SkinsManager:
     属性:
         _cache: 扫描结果缓存
     """
+    supported_archive_extensions = (".zip", ".rar", ".7z")
+    allowed_skin_extensions = {".dds", ".blk", ".tga"}
+    disabled_suffix = ".AimerWT_BAN"
     
-    def __init__(self):
+    def __init__(self, cache_dir: str | Path | None = None):
         """
         初始化 SkinsManager。
         """
         self._cache: dict | None = None
+        self._cache_signature = None
+        self._index_cache = ResourceIndexCache("skins_library", cache_dir=cache_dir)
+
+    def _clear_cache(self) -> None:
+        self._cache = None
+        self._cache_signature = None
+        self._index_cache.clear()
 
     def get_userskins_dir(self, game_path: str | Path) -> Path:
         """
@@ -70,6 +89,316 @@ class SkinsManager:
             UserSkins 目录路径
         """
         return Path(str(game_path)) / "UserSkins"
+
+    def discover_userskins_locations(
+        self,
+        configured_game_path: str | Path | None = None,
+        extra_game_paths: list[str | Path] | None = None,
+    ) -> dict[str, Any]:
+        """
+        查找本机可能存在的 War Thunder UserSkins 目录，用于识别 Steam/官方客户端之间的涂装目录差异。
+        """
+        candidates = self._collect_userskins_game_candidates(configured_game_path, extra_game_paths)
+        current_key = self._path_key(configured_game_path) if configured_game_path else ""
+        folders = []
+
+        for game_path in candidates:
+            userskins_dir = self.get_userskins_dir(game_path)
+            valid_game = self._check_is_wt_dir(game_path)
+            if not valid_game and not userskins_dir.exists():
+                continue
+
+            summary = self._summarize_userskins_dir(userskins_dir)
+            install_type = self._classify_game_path(game_path)
+            folders.append({
+                "id": self._location_id(userskins_dir),
+                "install_type": install_type,
+                "install_label": self._install_type_label(install_type),
+                "game_path": str(game_path),
+                "userskins_path": str(userskins_dir),
+                "exists": userskins_dir.exists(),
+                "valid_game": valid_game,
+                "is_current": self._path_key(game_path) == current_key if current_key else False,
+                **summary,
+            })
+
+        folders.sort(key=lambda item: (
+            not bool(item.get("is_current")),
+            str(item.get("install_type") or "unknown"),
+            str(item.get("userskins_path") or "").lower(),
+        ))
+        return {
+            "success": True,
+            "current_game_path": str(configured_game_path or ""),
+            "folders": folders,
+        }
+
+    def migrate_userskins_items(
+        self,
+        source_userskins_path: str | Path,
+        target_userskins_path: str | Path,
+    ) -> dict[str, Any]:
+        """
+        将来源 UserSkins 下的涂装文件夹复制到目标 UserSkins；同名文件夹默认跳过，不覆盖、不删除来源。
+        """
+        source_dir = Path(source_userskins_path).expanduser().resolve()
+        target_dir = Path(target_userskins_path).expanduser().resolve()
+        self._validate_userskins_migration_paths(source_dir, target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        copied = []
+        skipped = []
+        failed = []
+
+        entries = sorted((entry for entry in source_dir.iterdir() if entry.is_dir()), key=lambda p: p.name.lower())
+        for entry in entries:
+            target_entry = target_dir / entry.name
+            if target_entry.exists():
+                skipped.append(entry.name)
+                continue
+            try:
+                shutil.copytree(entry, target_entry)
+                copied.append(entry.name)
+            except Exception as exc:
+                failed.append({"name": entry.name, "error": str(exc)})
+
+        if copied:
+            self._clear_cache()
+
+        return {
+            "success": len(failed) == 0,
+            "source_path": str(source_dir),
+            "target_path": str(target_dir),
+            "copied": copied,
+            "skipped": skipped,
+            "failed": failed,
+            "copied_count": len(copied),
+            "skipped_count": len(skipped),
+            "failed_count": len(failed),
+        }
+
+    def _collect_userskins_game_candidates(
+        self,
+        configured_game_path: str | Path | None = None,
+        extra_game_paths: list[str | Path] | None = None,
+    ) -> list[Path]:
+        candidates: list[Path] = []
+
+        def add_candidate(path_value: str | Path | None) -> None:
+            if not path_value:
+                return
+            try:
+                path = Path(path_value).expanduser()
+            except Exception:
+                return
+            key = self._path_key(path)
+            if not key:
+                return
+            if any(self._path_key(existing) == key for existing in candidates):
+                return
+            candidates.append(path)
+
+        add_candidate(configured_game_path)
+        for path in extra_game_paths or []:
+            add_candidate(path)
+
+        for path in self._steam_warthunder_candidates():
+            add_candidate(path)
+        for path in self._official_warthunder_candidates():
+            add_candidate(path)
+
+        return candidates
+
+    def _steam_warthunder_candidates(self) -> list[Path]:
+        candidates = []
+        for library_root in self._steam_library_roots():
+            candidates.append(library_root / "steamapps" / "common" / "War Thunder")
+        return candidates
+
+    def _steam_library_roots(self) -> list[Path]:
+        roots: list[Path] = []
+
+        def add_root(path_value: str | Path | None) -> None:
+            if not path_value:
+                return
+            try:
+                path = Path(path_value).expanduser()
+            except Exception:
+                return
+            key = self._path_key(path)
+            if key and not any(self._path_key(root) == key for root in roots):
+                roots.append(path)
+
+        if winreg:
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
+                steam_path_str, _ = winreg.QueryValueEx(key, "SteamPath")
+                winreg.CloseKey(key)
+                add_root(steam_path_str)
+            except Exception:
+                pass
+
+        for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+            base = os.environ.get(env_name)
+            if base:
+                add_root(Path(base) / "Steam")
+
+        if platform.system() == "Windows":
+            for drive in "CDEFGHIJK":
+                drive_root = Path(f"{drive}:\\")
+                add_root(drive_root / "Steam")
+                add_root(drive_root / "SteamLibrary")
+        else:
+            home = Path.home()
+            add_root(home / ".local/share/Steam")
+            add_root(home / ".steam/steam")
+
+        parsed_roots = list(roots)
+        for root in parsed_roots:
+            library_vdf = root / "steamapps" / "libraryfolders.vdf"
+            for parsed in self._parse_steam_libraryfolders(library_vdf):
+                add_root(parsed)
+
+        return roots
+
+    def _parse_steam_libraryfolders(self, library_vdf: Path) -> list[Path]:
+        if not library_vdf.exists():
+            return []
+        try:
+            text = library_vdf.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        paths = []
+        for match in re.finditer(r'"path"\s+"([^"]+)"', text):
+            raw = match.group(1).replace("\\\\", "\\")
+            paths.append(Path(raw))
+        return paths
+
+    def _official_warthunder_candidates(self) -> list[Path]:
+        candidates = []
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "WarThunder")
+
+        for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+            base = os.environ.get(env_name)
+            if base:
+                candidates.append(Path(base) / "WarThunder")
+                candidates.append(Path(base) / "War Thunder")
+
+        if platform.system() == "Windows":
+            for drive in "CDEFGHIJK":
+                drive_root = Path(f"{drive}:\\")
+                candidates.extend([
+                    drive_root / "WarThunder",
+                    drive_root / "War Thunder",
+                    drive_root / "Games" / "War Thunder",
+                ])
+        else:
+            home = Path.home()
+            candidates.extend([
+                home / "WarThunder",
+                home / "War Thunder",
+                home / ".local/share/WarThunder",
+            ])
+        return candidates
+
+    def _summarize_userskins_dir(self, userskins_dir: Path) -> dict[str, Any]:
+        if not userskins_dir.exists() or not userskins_dir.is_dir():
+            return {
+                "item_count": 0,
+                "file_count": 0,
+                "total_size_bytes": 0,
+                "mtime": 0,
+                "truncated": False,
+            }
+
+        total_size = 0
+        file_count = 0
+        mtime = 0
+        try:
+            mtime = userskins_dir.stat().st_mtime
+            entries = sorted([entry for entry in userskins_dir.iterdir() if entry.is_dir()], key=lambda p: p.name.lower())
+            for entry in entries[:500]:
+                try:
+                    mtime = max(mtime, entry.stat().st_mtime)
+                except Exception:
+                    pass
+                size_bytes, count = self._get_dir_size_and_count_fast(entry)
+                total_size += size_bytes
+                file_count += count
+            return {
+                "item_count": len(entries),
+                "file_count": file_count,
+                "total_size_bytes": total_size,
+                "mtime": mtime,
+                "truncated": len(entries) > 500,
+            }
+        except Exception as exc:
+            log.warning(f"统计 UserSkins 目录失败: {userskins_dir} - {exc}")
+            return {
+                "item_count": 0,
+                "file_count": 0,
+                "total_size_bytes": 0,
+                "mtime": mtime,
+                "truncated": False,
+            }
+
+    def _classify_game_path(self, game_path: str | Path) -> str:
+        normalized = str(game_path).replace("\\", "/").lower()
+        name_key = Path(game_path).name.lower().replace(" ", "")
+        if "/steamapps/common/war thunder" in normalized:
+            return "steam"
+        if name_key == "warthunder":
+            return "official"
+        return "unknown"
+
+    def _install_type_label(self, install_type: str) -> str:
+        if install_type == "steam":
+            return "Steam 版"
+        if install_type == "official":
+            return "官方客户端"
+        return "未知来源"
+
+    def _check_is_wt_dir(self, path: str | Path) -> bool:
+        try:
+            game_path = Path(path)
+            if not game_path.exists() or not game_path.is_dir():
+                return False
+            valid_markers = ["config.blk", "beac_wt_mlauncher.exe", "gaijin_downloader.exe", "launcher.exe", "aces.exe"]
+            return any((game_path / marker).exists() for marker in valid_markers)
+        except Exception:
+            return False
+
+    def _validate_userskins_migration_paths(self, source_dir: Path, target_dir: Path) -> None:
+        if source_dir.name.lower() != "userskins" or target_dir.name.lower() != "userskins":
+            raise ValueError("只能迁移 UserSkins 目录")
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise FileNotFoundError(f"来源 UserSkins 不存在: {source_dir}")
+        if self._path_key(source_dir) == self._path_key(target_dir):
+            raise ValueError("来源和目标 UserSkins 不能相同")
+        source_text = str(source_dir)
+        target_text = str(target_dir)
+        try:
+            common_path = os.path.commonpath([source_text, target_text])
+        except ValueError:
+            common_path = ""
+        except Exception:
+            common_path = ""
+        if common_path in (source_text, target_text):
+            raise ValueError("来源和目标 UserSkins 不能互相嵌套")
+
+    def _path_key(self, path_value: str | Path | None) -> str:
+        if not path_value:
+            return ""
+        try:
+            return os.path.normcase(str(Path(path_value).expanduser().resolve(strict=False)))
+        except Exception:
+            return os.path.normcase(str(path_value))
+
+    def _location_id(self, path_value: str | Path) -> str:
+        key = self._path_key(path_value)
+        return hashlib.sha1(key.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
     def scan_userskins(
         self, 
@@ -85,7 +414,7 @@ class SkinsManager:
         userskins_dir = self.get_userskins_dir(game_path)
         
         if not userskins_dir.exists():
-            self._cache = None
+            self._clear_cache()
             return {"exists": False, "path": str(userskins_dir), "items": [], "valid": True}
 
         try:
@@ -93,38 +422,68 @@ class SkinsManager:
         except Exception:
             current_mtime = 0
 
-        if not force_refresh and self._cache is not None:
-            if (self._cache.get("path") == str(userskins_dir) and 
-                self._cache.get("mtime") == current_mtime):
+        root_signature = self._index_cache.build_root_signature(userskins_dir)
+
+        if not skip_covers and not force_refresh and self._cache is not None:
+            if (self._cache.get("path") == str(userskins_dir) and
+                self._cache_signature == root_signature):
                 # 如果缓存中有完整数据，直接返回即可
                 return self._cache
 
         items = []
+        cached_records = {} if skip_covers else self._index_cache.load_records(userskins_dir)
+        next_records: dict[str, dict] = {}
         try:
             entries = sorted([e for e in userskins_dir.iterdir() if e.is_dir()], key=lambda p: p.name.lower())
             
             for entry in entries:
-                size_bytes, file_count = self._get_dir_size_and_count_fast(entry)
+                entry_mtime = entry.stat().st_mtime
                 preview_path = self._find_preview_image(entry)
-                cover_url = ""
-                cover_is_default = False
-                
-                if not skip_covers:
-                    if preview_path:
-                        cover_url = self._to_data_url(preview_path)
-                    elif default_cover_path and default_cover_path.exists():
-                        cover_url = self._to_data_url(default_cover_path)
-                        cover_is_default = True
+                cover_path = preview_path
+                if not cover_path and default_cover_path and default_cover_path.exists():
+                    cover_path = default_cover_path
 
-                items.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "size_bytes": size_bytes,
-                    "file_count": file_count,
-                    "preview_path": str(preview_path) if preview_path else "",
-                    "cover_url": cover_url,
-                    "cover_is_default": cover_is_default,
-                })
+                signature = self._index_cache.build_item_signature(entry, cover_path)
+                item = None if skip_covers else self._index_cache.get_cached_item(cached_records, entry.name, signature)
+
+                is_disabled = entry.name.endswith(self.disabled_suffix)
+                enabled_name = entry.name[:-len(self.disabled_suffix)] if is_disabled else entry.name
+
+                if item is None:
+                    size_bytes, file_count = self._get_dir_size_and_count_fast(entry)
+                    cover_url = ""
+                    cover_is_default = False
+
+                    if not skip_covers:
+                        if preview_path:
+                            cover_url = self._to_data_url(preview_path)
+                        elif default_cover_path and default_cover_path.exists():
+                            cover_url = self._to_data_url(default_cover_path)
+                            cover_is_default = True
+
+                    item = {
+                        "name": entry.name,
+                        "enabled_name": enabled_name,
+                        "disabled": is_disabled,
+                        "path": str(entry),
+                        "size_bytes": size_bytes,
+                        "file_count": file_count,
+                        "preview_path": str(preview_path) if preview_path else "",
+                        "cover_url": cover_url,
+                        "cover_is_default": cover_is_default,
+                        "mtime": entry_mtime,
+                    }
+                else:
+                    item["name"] = entry.name
+                    item["enabled_name"] = enabled_name
+                    item["disabled"] = is_disabled
+                    item["path"] = str(entry)
+                    item["preview_path"] = str(preview_path) if preview_path else ""
+                    item["mtime"] = entry_mtime
+
+                items.append(item)
+                if not skip_covers:
+                    next_records[entry.name] = self._index_cache.make_record(signature, item)
         except Exception as e:
             log.error(f"扫描涂装失败: {e}")
 
@@ -137,6 +496,8 @@ class SkinsManager:
         }
         if not skip_covers:
             self._cache = result
+            self._cache_signature = root_signature
+            self._index_cache.save_records(userskins_dir, next_records)
         return result
 
     def _get_dir_size_and_count_fast(self, dir_path: Path) -> tuple[int, int]:
@@ -162,10 +523,10 @@ class SkinsManager:
         overwrite: bool = False,
     ) -> dict[str, Any]:
         """
-        将涂装 ZIP 解压导入到 UserSkins，并整理为目标目录结构。
+        将涂装压缩包解压导入到 UserSkins，并整理为目标目录结构。
         
         Args:
-            zip_path: ZIP 文件路径
+            zip_path: ZIP/RAR/7Z 文件路径
             game_path: 游戏安装路径
             progress_callback: 进度回调函数 (percentage, message)
             overwrite: 是否复盖同名文件夹
@@ -181,28 +542,29 @@ class SkinsManager:
         """
         zip_path = Path(zip_path)
         if not zip_path.exists():
-            raise ValueError(f"ZIP 文件不存在: {zip_path}")
-        if zip_path.suffix.lower() != ".zip":
-            raise ValueError("请选择有效的 .zip 文件")
+            raise ValueError(f"压缩包文件不存在: {zip_path}")
+        archive_ext = zip_path.suffix.lower()
+        if archive_ext not in self.supported_archive_extensions:
+            raise ValueError("请选择有效的 .zip/.rar/.7z 文件")
 
         # 仅允许导入涂装相关文件扩展名
-        ALLOWED_EXTENSIONS = {'.dds', '.blk', '.tga'}
         invalid_files = []
         
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                for member in zf.infolist():
-                    if member.is_dir():
-                        continue
-                    filename = member.filename
-                    if '__MACOSX' in filename or 'desktop.ini' in filename.lower():
-                        continue
-                    
-                    ext = Path(filename).suffix.lower()
-                    if ext and ext not in ALLOWED_EXTENSIONS:
-                        invalid_files.append(filename)
-        except zipfile.BadZipFile as e:
-            raise ValueError(f"无效的 ZIP 文件: {e}")
+        if archive_ext == ".zip":
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        filename = member.filename
+                        if '__MACOSX' in filename or 'desktop.ini' in filename.lower():
+                            continue
+
+                        ext = Path(filename).suffix.lower()
+                        if ext and ext not in self.allowed_skin_extensions:
+                            invalid_files.append(filename)
+            except zipfile.BadZipFile as e:
+                raise ValueError(f"无效的 ZIP 文件: {e}")
         
         if invalid_files:
             file_list = '\n'.join(f'  • {f}' for f in invalid_files[:10])
@@ -257,11 +619,12 @@ class SkinsManager:
             if progress_callback:
                 progress_callback(1, f"准备解压到 UserSkins: {zip_path.name}")
 
-            self._extract_zip_safely(
+            self._extract_archive_safely(
                 zip_path, tmp_dir, 
                 progress_callback=progress_callback, 
                 base_progress=2, share_progress=85
             )
+            self._validate_extracted_skin_files(tmp_dir)
 
             top_level = [
                 p for p in tmp_dir.iterdir() 
@@ -296,7 +659,7 @@ class SkinsManager:
         if progress_callback:
             progress_callback(100, "导入完成")
 
-        self._cache = None
+        self._clear_cache()
         log.info(f"涂装导入成功: {target_dir}")
         return {"ok": True, "target_dir": str(target_dir)}
 
@@ -336,13 +699,68 @@ class SkinsManager:
 
         try:
             old_dir.rename(new_dir)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已重命名涂装: {old_name} -> {new_name}")
             return True
         except PermissionError as e:
             raise OSError(f"重命名失败（权限不足）: {e}")
         except OSError as e:
             raise OSError(f"重命名失败: {e}")
+
+    def _resolve_skin_dir(self, game_path: str | Path, skin_name: str) -> Path:
+        name = str(skin_name or "").strip()
+        if not name or name != Path(name).name:
+            raise ValueError("涂装文件夹名称不合法")
+        skin_dir = self.get_userskins_dir(game_path) / name
+        if not skin_dir.exists() or not skin_dir.is_dir():
+            raise FileNotFoundError(f"涂装文件夹不存在: {name}")
+        return skin_dir
+
+    def open_skin_folder(self, game_path: str | Path, skin_name: str) -> bool:
+        """打开指定涂装文件夹。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(str(skin_dir))
+        elif system == "Darwin":
+            subprocess.run(["open", str(skin_dir)], check=True)
+        else:
+            subprocess.run(["xdg-open", str(skin_dir)], check=True)
+        return True
+
+    def disable_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """将涂装文件夹改名为禁用状态。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        if skin_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": skin_dir.name, "disabled": True}
+        target_dir = skin_dir.with_name(f"{skin_dir.name}{self.disabled_suffix}")
+        if target_dir.exists():
+            raise FileExistsError(f"已存在禁用状态文件夹: {target_dir.name}")
+        skin_dir.rename(target_dir)
+        self._clear_cache()
+        return {"success": True, "name": target_dir.name, "disabled": True}
+
+    def enable_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """将涂装文件夹恢复为启用状态。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        if not skin_dir.name.endswith(self.disabled_suffix):
+            return {"success": True, "name": skin_dir.name, "disabled": False}
+        enabled_name = skin_dir.name[:-len(self.disabled_suffix)]
+        if not enabled_name:
+            raise ValueError("启用后的涂装文件夹名称不合法")
+        target_dir = skin_dir.with_name(enabled_name)
+        if target_dir.exists():
+            raise FileExistsError(f"已存在启用状态文件夹: {target_dir.name}")
+        skin_dir.rename(target_dir)
+        self._clear_cache()
+        return {"success": True, "name": target_dir.name, "disabled": False}
+
+    def delete_skin(self, game_path: str | Path, skin_name: str) -> dict[str, Any]:
+        """删除指定涂装文件夹。"""
+        skin_dir = self._resolve_skin_dir(game_path, skin_name)
+        shutil.rmtree(skin_dir)
+        self._clear_cache()
+        return {"success": True, "name": skin_dir.name}
 
     def update_skin_cover(self, game_path: str | Path, skin_name: str, img_path: str) -> bool:
         """
@@ -374,7 +792,7 @@ class SkinsManager:
         
         try:
             shutil.copy2(img_path, dst)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已更新涂装封面: {skin_name}")
             return True
         except PermissionError as e:
@@ -419,7 +837,7 @@ class SkinsManager:
         try:
             with open(dst, "wb") as f:
                 f.write(raw)
-            self._cache = None
+            self._clear_cache()
             log.info(f"已更新涂装封面: {skin_name}")
             return True
         except PermissionError as e:
@@ -525,6 +943,178 @@ class SkinsManager:
             raise
         except OSError as e:
             log.warning(f"磁盘空间检查失败（已跳过）: {e}")
+
+    def _find_7z(self) -> str | None:
+        return (
+            shutil.which("7z")
+            or shutil.which("7z.exe")
+            or shutil.which("7za")
+            or shutil.which("7za.exe")
+            or shutil.which("7zr")
+            or shutil.which("7zr.exe")
+        )
+
+    def _run_7z(self, args: list[str]) -> tuple[int, str]:
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                errors="ignore",
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as e:
+            stdout = e.stdout.decode("utf-8", "ignore") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr = e.stderr.decode("utf-8", "ignore") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            output = stdout + "\n" + stderr
+            raise SkinsImportError(output.strip() or "7z 解压超时") from e
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        return result.returncode, output.strip()
+
+    def _is_archive_member_path_safe(self, filename: str) -> bool:
+        normalized = str(filename or "").replace("\\", "/").strip()
+        if not normalized:
+            return False
+        if re.match(r"^[a-zA-Z]:", normalized) or normalized.startswith("/"):
+            return False
+        parts = [part for part in normalized.split("/") if part]
+        return ".." not in parts
+
+    def _validate_7z_archive_entries(self, seven_zip: str, archive_path: Path) -> None:
+        code, output = self._run_7z([seven_zip, "l", "-slt", "-p", str(archive_path)])
+        if code != 0:
+            raise SkinsImportError(output or "无法读取压缩包目录")
+
+        in_entries = False
+        invalid_files: list[str] = []
+        unsafe_files: list[str] = []
+        for line in output.splitlines():
+            if line.startswith("----------"):
+                in_entries = True
+                continue
+            if not in_entries or not line.startswith("Path = "):
+                continue
+
+            filename = line[7:].strip()
+            if not filename or filename.endswith(("/", "\\")):
+                continue
+            if "__MACOSX" in filename or "desktop.ini" in filename.lower():
+                continue
+            if not self._is_archive_member_path_safe(filename):
+                unsafe_files.append(filename)
+                continue
+
+            ext = Path(filename).suffix.lower()
+            if ext and ext not in self.allowed_skin_extensions:
+                invalid_files.append(filename)
+
+        if unsafe_files:
+            file_list = "\n".join(f"  - {f}" for f in unsafe_files[:10])
+            raise SkinsImportError(f"压缩包路径不安全，已拒绝导入:\n{file_list}")
+        if invalid_files:
+            file_list = "\n".join(f"  • {f}" for f in invalid_files[:10])
+            if len(invalid_files) > 10:
+                file_list += f"\n  ... 还有 {len(invalid_files) - 10} 个文件"
+            raise ValueError(
+                f"❌ 检测到不允许的文件类型！\n\n"
+                f"涂装包只允许包含以下文件类型：\n"
+                f"  ✓ .dds (纹理文件)\n"
+                f"  ✓ .blk (配置文件)\n"
+                f"  ✓ .tga (纹理文件)\n\n"
+                f"但在压缩包中发现了以下非法文件：\n{file_list}\n\n"
+                f"💡 提示：请检查压缩包内容，确保只包含涂装相关文件。"
+            )
+
+    def _extract_with_7z(
+        self,
+        archive_path: Path,
+        target_dir: Path,
+        progress_callback: Callable[[int, str], None] | None = None,
+        base_progress: int = 0,
+        share_progress: int = 100,
+    ) -> None:
+        seven_zip = self._find_7z()
+        if not seven_zip:
+            raise SkinsImportError("未检测到 7z 解压组件，RAR/7Z 导入需要安装 7-Zip")
+
+        self._validate_7z_archive_entries(seven_zip, archive_path)
+        if progress_callback:
+            progress_callback(base_progress, f"开始解压: {archive_path.name}")
+
+        args = [
+            seven_zip,
+            "x",
+            "-y",
+            "-p",
+            f"-o{str(target_dir)}",
+            str(archive_path),
+        ]
+        code, output = self._run_7z(args)
+        if code != 0:
+            lower = output.lower()
+            if "password" in lower or "encrypted" in lower or "wrong password" in lower:
+                raise SkinsImportError("压缩包需要密码，当前涂装导入暂不支持加密压缩包")
+            raise SkinsImportError(output or "解压失败")
+
+        if progress_callback:
+            progress_callback(base_progress + share_progress, f"解压完成: {archive_path.name}")
+
+    def _extract_archive_safely(
+        self,
+        archive_path: Path,
+        target_dir: Path,
+        progress_callback: Callable[[int, str], None] | None = None,
+        base_progress: int = 0,
+        share_progress: int = 100,
+    ) -> None:
+        suffix = archive_path.suffix.lower()
+        if suffix == ".zip":
+            self._extract_zip_safely(
+                archive_path,
+                target_dir,
+                progress_callback=progress_callback,
+                base_progress=base_progress,
+                share_progress=share_progress,
+            )
+            return
+        if suffix in (".rar", ".7z"):
+            self._extract_with_7z(
+                archive_path,
+                target_dir,
+                progress_callback=progress_callback,
+                base_progress=base_progress,
+                share_progress=share_progress,
+            )
+            return
+        raise SkinsImportError(f"不支持的压缩格式: {archive_path.suffix}")
+
+    def _validate_extracted_skin_files(self, base_dir: Path) -> None:
+        invalid_files = []
+        for file_path in base_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            rel_path = str(file_path.relative_to(base_dir))
+            if "__MACOSX" in rel_path or "desktop.ini" in rel_path.lower():
+                continue
+            ext = file_path.suffix.lower()
+            if ext and ext not in self.allowed_skin_extensions:
+                invalid_files.append(rel_path)
+
+        if not invalid_files:
+            return
+
+        file_list = "\n".join(f"  • {f}" for f in invalid_files[:10])
+        if len(invalid_files) > 10:
+            file_list += f"\n  ... 还有 {len(invalid_files) - 10} 个文件"
+        raise ValueError(
+            f"❌ 检测到不允许的文件类型！\n\n"
+            f"涂装包只允许包含以下文件类型：\n"
+            f"  ✓ .dds (纹理文件)\n"
+            f"  ✓ .blk (配置文件)\n"
+            f"  ✓ .tga (纹理文件)\n\n"
+            f"但在压缩包中发现了以下非法文件：\n{file_list}\n\n"
+            f"💡 提示：请检查压缩包内容，确保只包含涂装相关文件。"
+        )
 
     def _extract_zip_safely(
         self, 
