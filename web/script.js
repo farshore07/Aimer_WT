@@ -4471,6 +4471,12 @@ app.openInstallModal = async function (modId) {
     const mod = app.modCache.find(m => m.id === modId);
     if (!mod) return;
 
+    const installMode = typeof app.showInstallModeDialog === 'function'
+        ? await app.showInstallModeDialog(mod)
+        : 'official_mod';
+    if (!installMode) return;
+    app.currentInstallMode = installMode;
+
     const modal = document.getElementById('modal-install');
     const container = document.getElementById('install-toggles');
     container.innerHTML = '';
@@ -4596,6 +4602,12 @@ document.getElementById('btn-confirm-install').onclick = async function () {
         return;
     }
 
+    const installMode = app.currentInstallMode || 'official_mod';
+    if (installMode === 'sound_replace' && typeof app.confirmSoundReplaceInstall === 'function') {
+        await app.confirmSoundReplaceInstall(allFiles);
+        return;
+    }
+
     // 安装前执行冲突检查
     const conflictBtn = document.getElementById('btn-confirm-install');
     const originalText = conflictBtn.innerHTML;
@@ -4648,9 +4660,16 @@ document.getElementById('btn-confirm-install').onclick = async function () {
 };
 
 app.restoreGame = async function () {
+    const restoreMode = typeof app.showRestoreModeDialog === 'function'
+        ? await app.showRestoreModeDialog()
+        : 'official_mod';
+    if (!restoreMode) return;
+    const restoreMessage = typeof app.getRestoreConfirmMessage === 'function'
+        ? app.getRestoreConfirmMessage(restoreMode)
+        : app.t("settings.restore_confirm_message");
     const yes = await app.confirm(
         app.t("settings.restore_confirm_title"),
-        app.t("settings.restore_confirm_message"),
+        restoreMessage,
         true
     );
     if (yes) {
@@ -4658,7 +4677,7 @@ app.restoreGame = async function () {
         if (typeof MinimalistLoading !== 'undefined') {
             MinimalistLoading.show();
         }
-        pywebview.api.restore_game();
+        pywebview.api.restore_game(restoreMode);
         app.switchTab('home');
     }
 };
@@ -7041,7 +7060,7 @@ app.setupGlobalDragDrop = function () {
         const app = getApp();
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay show';
-        overlay.style.zIndex = '10002';
+        overlay.style.zIndex = '13010';
         let categoriesData = Array.isArray(categories) ? [...categories] : [];
 
         overlay.innerHTML = `
@@ -7300,7 +7319,7 @@ app.setupGlobalDragDrop = function () {
         const app = getApp();
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay show';
-        overlay.style.zIndex = '10003';
+        overlay.style.zIndex = '13020';
 
         const optionsHtml = items.map((it, idx) => {
             const nm = escapeHtml(String(it.name || `stream_${it.stream_index}`));
@@ -7422,7 +7441,7 @@ app.setupGlobalDragDrop = function () {
         const app = getApp();
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay show';
-        overlay.style.zIndex = '10003';
+        overlay.style.zIndex = '13020';
 
         const optionsHtml = items.map((it, idx) => {
             const nm = escapeHtml(String(it.display_name || tr('mod.default_audio_name', { index: idx + 1 }, `试听音频${idx + 1}`)));

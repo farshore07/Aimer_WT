@@ -59,6 +59,8 @@ class ConfigManager:
         "theme_mode": "Light",
         "is_first_run": True,
         "agreement_version": "",
+        "current_mod": "",
+        "sound_replace_disclaimer_accepted": False,
         "guide_state": {
             "completed": False,
             "firstOpenHandled": False
@@ -337,6 +339,15 @@ class ConfigManager:
             bool: 是否成功保存
         """
         self.config["agreement_version"] = str(version) if version else ""
+        return self.save_config()
+
+    def get_sound_replace_disclaimer_accepted(self) -> bool:
+        """读取 Sound 源文件替换风险提示的确认状态。"""
+        return bool(self.config.get("sound_replace_disclaimer_accepted", False))
+
+    def set_sound_replace_disclaimer_accepted(self, accepted: bool) -> bool:
+        """更新 Sound 源文件替换风险提示的确认状态并写入 settings.json。"""
+        self.config["sound_replace_disclaimer_accepted"] = bool(accepted)
         return self.save_config()
 
     def get_guide_state(self) -> dict:

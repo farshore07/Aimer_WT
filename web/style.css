@@ -2958,6 +2958,10 @@ i[class^="ri-"] {
     opacity: 0; /* 显式设置初始状态为透明，防止从 none 变为 flex 时发生瞬间黑屏闪现 */
 }
 
+#modal-alert {
+    z-index: 40000;
+}
+
 .modal-overlay.show {
     display: flex;
     animation: fadeIn 0.24s ease-out forwards;

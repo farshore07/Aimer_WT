@@ -35,6 +35,7 @@ from pathlib import Path
 from collections import defaultdict
 from services.config_manager import ConfigManager
 from services.core_logic import CoreService
+from services.sound_replace_service import SoundReplaceService
 from services.library_manager import ArchivePasswordCanceled, LibraryManager
 from utils.logger import setup_logger, get_logger, set_ui_callback
 from services.sights_manager import SightsManager
@@ -468,6 +469,7 @@ class AppApi:
         self._hangar_mgr = HangarManager()
         self._bank_preview_mgr = BankPreviewService(BASE_DIR)
         self._logic = CoreService()
+        self._sound_replace = SoundReplaceService(self._get_sound_replace_backup_root())
         self._audition_items_cache = {}
         self._audition_scan_lock = threading.Lock()
 
@@ -503,6 +505,13 @@ class AppApi:
 
         # 服务器数据缓存文件路径
         self._server_cache_file = Path(self._cfg_mgr.config_dir) / "server_cache.json"
+
+    def _get_sound_replace_backup_root(self) -> Path:
+        # Sound 源文件替换备份挂在语音包库同级的 WT备份 目录下。
+        return Path(self._lib_mgr.library_dir).parent / "WT备份" / "Sound源文件备份"
+
+    def _refresh_sound_replace_backup_root(self):
+        self._sound_replace.set_backup_root(self._get_sound_replace_backup_root())
 
     def _get_client_diagnostic_log_path(self) -> Path:
         log_dir = get_docs_data_dir() / "logs"
@@ -1521,7 +1530,7 @@ class AppApi:
             "path_valid": is_valid,
             "theme": theme,
             "active_theme": active_theme,
-            "installed_mods": self._logic.get_installed_mods(),
+            "installed_mods": self.get_installed_mods(),
             "sights_path": sights_path,
             "launch_mode": launch_mode,
             "hwid": get_hwid(),
@@ -2016,7 +2025,19 @@ class AppApi:
         - 上游: 前端切换路径或执行安装/还原后，用于同步界面状态。
         - 下游: 无。
         """
-        return self._logic.get_installed_mods()
+        mods = list(self._logic.get_installed_mods() or [])
+        try:
+            path = self._cfg_mgr.get_game_path()
+            valid, _ = self._logic.validate_game_path(path)
+            if valid:
+                self._refresh_sound_replace_backup_root()
+                status = self._sound_replace.get_status(path)
+                for mod_name in status.get("active_mod_names", []):
+                    if mod_name and mod_name not in mods:
+                        mods.append(mod_name)
+        except Exception as e:
+            log.debug(f"读取 Sound 替换状态失败: {e}")
+        return mods
 
     def log_message(self, level, message):
         """
@@ -5130,6 +5151,195 @@ class AppApi:
         except Exception as e:
             return {"success": False, "msg": str(e)}
 
+    def _parse_install_list(self, install_list):
+        if isinstance(install_list, str):
+            try:
+                parsed = json.loads(install_list)
+            except json.JSONDecodeError:
+                return []
+            return parsed if isinstance(parsed, list) else []
+        return install_list if isinstance(install_list, list) else []
+
+    def _current_valid_game_path(self):
+        path = self._cfg_mgr.get_game_path()
+        valid, msg = self._logic.validate_game_path(path)
+        if not valid:
+            return None, msg or "未设置有效游戏路径"
+        return path, ""
+
+    def check_sound_replace_disclaimer(self):
+        return {
+            "success": True,
+            "accepted": self._cfg_mgr.get_sound_replace_disclaimer_accepted(),
+        }
+
+    def accept_sound_replace_disclaimer(self, accepted=True):
+        ok = self._cfg_mgr.set_sound_replace_disclaimer_accepted(bool(accepted))
+        return {"success": bool(ok), "accepted": bool(accepted) if ok else False}
+
+    def preview_sound_replace_install(self, mod_name, install_list):
+        try:
+            path, msg = self._current_valid_game_path()
+            if not path:
+                return {"success": False, "msg": msg}
+            mod_path = self._lib_mgr.library_dir / str(mod_name or "")
+            if not mod_path.exists():
+                return {"success": False, "msg": "语音包不存在"}
+            self._refresh_sound_replace_backup_root()
+            result = self._sound_replace.preview_install(
+                path,
+                mod_path,
+                self._parse_install_list(install_list),
+            )
+            if result.get("success"):
+                import shutil
+                result["backup_disk_free_known"] = False
+                result["backup_disk_free_bytes"] = None
+                try:
+                    backup_root = self._get_sound_replace_backup_root()
+                    check_path = backup_root
+                    while not check_path.exists() and check_path.parent != check_path:
+                        check_path = check_path.parent
+                    usage = shutil.disk_usage(check_path)
+                    result["backup_disk_free_bytes"] = usage.free
+                    result["backup_disk_free_known"] = True
+                except Exception:
+                    pass
+            return result
+        except Exception as e:
+            log.error(f"Sound 替换预览失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def get_sound_replace_status(self):
+        try:
+            path, msg = self._current_valid_game_path()
+            if not path:
+                return {"success": False, "msg": msg}
+            self._refresh_sound_replace_backup_root()
+            return self._sound_replace.get_status(path)
+        except Exception as e:
+            log.error(f"读取 Sound 替换状态失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def install_sound_replace(self, mod_name, install_list, skip_backup=False):
+        install_list = self._parse_install_list(install_list)
+        with self._lock:
+            if self._is_busy:
+                log.warning("另一个任务正在进行中，请稍候...")
+                return {"success": False, "msg": "另一个任务正在进行中，请稍候"}
+            self._is_busy = True
+
+        path, msg = self._current_valid_game_path()
+        if not path:
+            with self._lock:
+                self._is_busy = False
+            return {"success": False, "msg": msg}
+
+        mod_path = self._lib_mgr.library_dir / str(mod_name or "")
+        if not mod_path.exists():
+            with self._lock:
+                self._is_busy = False
+            return {"success": False, "msg": "语音包不存在"}
+
+        self._cfg_mgr.set_current_mod(mod_name)
+        self._refresh_sound_replace_backup_root()
+
+        def _run():
+            result = {"success": False, "msg": "Sound 替换未完成"}
+            try:
+                result = self._sound_replace.install(
+                    path,
+                    mod_path,
+                    install_list,
+                    mod_name=str(mod_name or ""),
+                    progress_callback=self.update_loading_ui,
+                    skip_backup=bool(skip_backup),
+                )
+                if self._window:
+                    if result.get("success"):
+                        self._update_loading_i18n(100, "sound_replace.install_done")
+                        mod_js = json.dumps(str(mod_name or ""), ensure_ascii=False)
+                        self._window.evaluate_js(f"if(window.app && app.onInstallSuccess) app.onInstallSuccess({mod_js})")
+                    else:
+                        reason = result.get("error") or result.get("msg") or result.get("error_code") or "Sound 替换失败"
+                        self._update_loading_i18n(
+                            100,
+                            "loading.install.failed_with_reason",
+                            {"reason": reason},
+                        )
+            except Exception as e:
+                result = {"success": False, "msg": str(e)}
+                log.error(f"Sound 替换安装失败: {e}")
+                if self._window:
+                    self._update_loading_i18n(
+                        100,
+                        "loading.install.failed_with_reason",
+                        {"reason": str(e)},
+                    )
+            finally:
+                if self._window:
+                    try:
+                        payload = json.dumps(result, ensure_ascii=False)
+                        self._window.evaluate_js(
+                            f"if(window.app && app.onSoundInstallResult) app.onSoundInstallResult({payload})"
+                        )
+                    except Exception as e:
+                        log.warning(f"推送 Sound 替换安装结果失败: {e}")
+                with self._lock:
+                    self._is_busy = False
+
+        t = threading.Thread(target=_run)
+        t.daemon = True
+        t.start()
+        return {"success": True, "started": True}
+
+    def get_restore_options(self):
+        try:
+            path, msg = self._current_valid_game_path()
+            if not path:
+                return {"success": False, "msg": msg}
+            self._refresh_sound_replace_backup_root()
+            official_mods = self._logic.get_installed_mods() or []
+            sound_status = self._sound_replace.get_status(path)
+            has_sound_restore = (
+                int(sound_status.get("active_count", 0)) > 0
+                or bool(sound_status.get("pending_manifest_exists"))
+            )
+            return {
+                "success": True,
+                "official_mod": {
+                    "available": True,
+                    "installed_count": len(official_mods),
+                },
+                "sound_replace": {
+                    "available": has_sound_restore,
+                    "active_count": sound_status.get("active_count", 0),
+                    "changed_count": sound_status.get("changed_count", 0),
+                    "backup_skipped_count": sound_status.get("backup_skipped_count", 0),
+                    "pending_manifest_exists": sound_status.get("pending_manifest_exists", False),
+                },
+                "all": {
+                    "available": has_sound_restore,
+                },
+            }
+        except Exception as e:
+            log.error(f"读取还原选项失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def clear_sound_replace_skipped_records(self):
+        try:
+            path, msg = self._current_valid_game_path()
+            if not path:
+                return {"success": False, "msg": msg}
+            self._refresh_sound_replace_backup_root()
+            result = self._sound_replace.clear_backup_skipped_entries(path)
+            if result.get("success") and int(result.get("remaining", 0)) == 0:
+                self._cfg_mgr.set_current_mod("")
+            return result
+        except Exception as e:
+            log.error(f"清除未备份 Sound 替换记录失败: {e}")
+            return {"success": False, "msg": str(e)}
+
     def install_mod(self, mod_name, install_list):
         # 将指定语音包按选择的文件夹列表安装到游戏 sound/mod，并更新前端加载进度与安装状态。
         # install_list 可能以 JSON 字符串形式传入
@@ -5436,30 +5646,72 @@ class AppApi:
             log.error(f"复制国籍文件失败: {e}")
             return {"success": False, "msg": str(e)}
 
-    def restore_game(self):
-        # 触发游戏目录还原流程：清空 sound/mod 子项并关闭 enable_mod，同时清理当前语音包状态。
-        if self._is_busy:
-            log.warning("另一个任务正在进行中，请稍候...")
-            return False
+    def restore_game(self, restore_mode="official_mod"):
+        # 触发游戏目录还原流程，可分别处理官方 mod 目录与 Sound 源文件替换备份。
+        restore_mode = str(restore_mode or "official_mod")
+        if restore_mode not in {"official_mod", "sound_replace", "all"}:
+            restore_mode = "official_mod"
+        with self._lock:
+            if self._is_busy:
+                log.warning("另一个任务正在进行中，请稍候...")
+                return False
+            self._is_busy = True
 
         path = self._cfg_mgr.get_game_path()
         valid, msg = self._logic.validate_game_path(path)
         if not valid:
             log.error(f"还原失败: {msg}")
+            with self._lock:
+                self._is_busy = False
             return False
 
-        self._is_busy = True
-
         def _run():
+            sound_result = None
+            official_restored = False
             try:
-                self._logic.restore_game()
+                if restore_mode in {"official_mod", "all"}:
+                    self._logic.restore_game()
+                    self._cfg_mgr.set_current_mod("")
+                    official_restored = True
 
-                # 还原成功，清除状态
-                self._cfg_mgr.set_current_mod("")
+                if restore_mode in {"sound_replace", "all"}:
+                    try:
+                        self._refresh_sound_replace_backup_root()
+                        sound_result = self._sound_replace.restore(path, progress_callback=self.update_loading_ui)
+                        if sound_result.get("success"):
+                            status = self._sound_replace.get_status(path)
+                            if int(status.get("active_count", 0)) == 0:
+                                self._cfg_mgr.set_current_mod("")
+                    except Exception as e:
+                        log.error(f"Sound 还原失败: {e}")
+                        sound_result = {"success": False, "msg": str(e), "restored": 0, "failed": 1, "skipped": 0}
+
                 if self._window:
-                    self._window.evaluate_js("app.onRestoreSuccess()")
+                    if sound_result is not None:
+                        payload = json.dumps(sound_result, ensure_ascii=False)
+                        self._window.evaluate_js(
+                            f"if(window.app && app.onSoundRestoreResult) app.onSoundRestoreResult({payload})"
+                        )
+                    restore_success = (
+                        (restore_mode == "official_mod" and official_restored)
+                        or (
+                            restore_mode == "sound_replace"
+                            and bool(sound_result and sound_result.get("success"))
+                        )
+                        or (
+                            restore_mode == "all"
+                            and official_restored
+                            and bool(sound_result and sound_result.get("success"))
+                        )
+                    )
+                    if restore_success:
+                        self.update_loading_ui(100, "还原完成")
+                        self._window.evaluate_js("app.onRestoreSuccess()")
+                    elif sound_result is not None:
+                        self.update_loading_ui(100, "Sound 还原未完成")
             finally:
-                self._is_busy = False
+                with self._lock:
+                    self._is_busy = False
 
         t = threading.Thread(target=_run)
         t.daemon = True  # 设置为守护线程
@@ -6000,6 +6252,7 @@ class AppApi:
                     self._lib_mgr.root_dir / ".." / DEFAULT_RESOURCE_ROOT_DIR_NAME / DEFAULT_VOICE_LIBRARY_DIR_NAME
                 )
                 self._lib_mgr.update_paths(library_dir=str(default_library))
+                self._refresh_sound_replace_backup_root()
                 log.info(f"语音包库已重设为预设路径: {default_library}")
                 return {"success": True}
 
@@ -6012,6 +6265,7 @@ class AppApi:
                     return {"success": False, "msg": f"无法建立语音包库目录: {e}"}
             self._cfg_mgr.set_library_dir(library_dir)
             self._lib_mgr.update_paths(library_dir=library_dir)
+            self._refresh_sound_replace_backup_root()
             return {"success": True}
         except Exception as e:
             log.error(f"保存语音包库路径失败: {e}")
