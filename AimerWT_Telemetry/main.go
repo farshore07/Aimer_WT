@@ -92,7 +92,8 @@ func initDB() {
 		&RedeemCode{}, &RedeemRecord{}, &NoticeReaction{},
 		&NoticeComment{}, &NoticeCommentLike{}, &NoticeCommentBan{}, &CommentReport{},
 		&UserProfile{}, &NicknameRequest{}, &AvatarRequest{}, &AuditLog{},
-		&UserUIDMapping{}, &UserUIDCounter{}); err != nil {
+		&UserUIDMapping{}, &UserUIDCounter{},
+		&PushDeliveryLog{}, &UserCommandLog{}); err != nil {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 

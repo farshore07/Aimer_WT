@@ -388,6 +388,9 @@ const app = {
             case 'ad_stats':
                 this.loadAdStats();
                 break;
+            case 'analysis':
+                this.loadPushStats();
+                break;
             case 'emoji_permission':
                 this.initEmojiPermission();
                 break;
@@ -1420,6 +1423,99 @@ const app = {
         this.startUpdateTimer();
         this.showAlert('数据已刷新', 'success');
     },
+    /**
+     * 加载推送覆盖率统计数据
+     */
+    async loadPushStats() {
+        const panel = document.getElementById('pushStatsPanel');
+        const container = document.getElementById('pushStatsContent');
+        if (!panel || !container) return;
+
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/push-stats`);
+            if (!res.ok) throw new Error('加载失败');
+            const data = await res.json();
+
+            if (!data.items || data.items.length === 0) {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = '';
+            const totalUsers = data.total_users || 0;
+            const esc = (value) => this.escapeHtmlSafe(value === undefined || value === null ? '' : String(value));
+
+            const typeIcons = {
+                header_banner: { icon: 'ri-price-tag-3-line', label: 'Banner' },
+                alert: { icon: 'ri-alert-line', label: '紧急通知' },
+                update: { icon: 'ri-refresh-line', label: '更新提示' },
+                ad_carousel: { icon: 'ri-image-line', label: '广告轮播' },
+                knowledge_ad: { icon: 'ri-book-open-line', label: '信息库' },
+                notice: { icon: 'ri-megaphone-line', label: '公告' },
+            };
+
+            const scopeLabel = (scope) => {
+                scope = String(scope || '');
+                if (!scope || scope === 'all') return '全部用户';
+                if (scope === 'star') return '星标用户';
+                if (scope === 'admin') return '管理员';
+                if (scope.startsWith('tag:')) return `标签: ${scope.replace('tag:', '')}`;
+                return `版本: ${scope}`;
+            };
+
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;min-width:640px;table-layout:fixed;border-collapse:collapse;font-size:13px;">';
+            html += '<colgroup><col style="width:18%;"><col style="width:30%;"><col style="width:15%;"><col style="width:13%;"><col style="width:24%;"></colgroup>';
+            html += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text-muted);font-size:12px;">';
+            html += '<th style="text-align:left;padding:8px 12px;font-weight:500;white-space:nowrap;">推送类型</th>';
+            html += '<th style="text-align:left;padding:8px 12px;font-weight:500;white-space:nowrap;">推送内容</th>';
+            html += '<th style="text-align:left;padding:8px 12px;font-weight:500;white-space:nowrap;">推送范围</th>';
+            html += '<th style="text-align:right;padding:8px 12px;font-weight:500;white-space:nowrap;">已送达</th>';
+            html += '<th style="text-align:left;padding:8px 12px;font-weight:500;white-space:nowrap;">覆盖率</th>';
+            html += '</tr></thead><tbody>';
+
+            data.items.forEach(item => {
+                const meta = typeIcons[item.push_type] || { icon: 'ri-inbox-line', label: item.push_type };
+                const isActive = item.active;
+                const rowStyle = isActive ? '' : 'opacity:0.45;';
+                const description = isActive
+                    ? esc(item.description || '-')
+                    : '<span style="color:var(--text-muted);">未激活</span>';
+
+                html += `<tr style="border-bottom:1px solid var(--border);${rowStyle}">`;
+                html += `<td style="padding:10px 12px;white-space:nowrap;"><span style="display:inline-flex;align-items:center;gap:6px;color:var(--text);"><i class="${esc(meta.icon)}" style="font-size:15px;color:var(--text-muted);"></i>${esc(meta.label)}</span></td>`;
+                html += `<td style="padding:10px 12px;min-width:0;" title="${isActive ? esc(item.description || '-') : '未激活'}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${description}</div></td>`;
+                html += `<td style="padding:10px 12px;white-space:nowrap;">${isActive ? esc(scopeLabel(item.scope)) : '-'}</td>`;
+
+                if (isActive) {
+                    html += `<td style="padding:10px 12px;text-align:right;font-weight:600;white-space:nowrap;">${(item.delivered_users || 0).toLocaleString()} <span style="color:var(--text-muted);font-weight:400;font-size:12px;">/ ${(item.target_users || 0).toLocaleString()}</span></td>`;
+                    const pct = item.coverage_target || 0;
+                    const barColor = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+                    html += `<td style="padding:10px 12px;">`;
+                    html += `<div style="display:flex;align-items:center;gap:8px;min-width:0;">`;
+                    html += `<div style="flex:1;min-width:48px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;"><div style="height:100%;width:${Math.min(pct, 100)}%;background:${barColor};border-radius:3px;transition:width 0.3s;"></div></div>`;
+                    html += `<span style="min-width:48px;text-align:right;font-weight:600;font-size:12px;">${pct.toFixed(1)}%</span>`;
+                    html += `</div></td>`;
+                } else {
+                    html += '<td style="padding:10px 12px;text-align:right;color:var(--text-muted);">-</td>';
+                    html += '<td style="padding:10px 12px;color:var(--text-muted);">-</td>';
+                }
+
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+
+            const sub = document.getElementById('pushStatsSub');
+            const activeCount = data.items.filter(i => i.active).length;
+            if (sub) sub.textContent = `${activeCount} 个活跃推送 · 总用户 ${totalUsers.toLocaleString()}`;
+
+            container.innerHTML = html;
+        } catch (err) {
+            console.warn('loadPushStats failed:', err);
+            if (panel) panel.style.display = 'none';
+        }
+    },
+
 
     /**
      * 处理控制操作
@@ -5657,9 +5753,20 @@ const app = {
                 ${_pt('can_ban_user', '封禁用户评论', '允许该用户封禁其他用户的评论资格', !!commentPerms.can_ban_user)}
             </div>
         </div>
+
+        <div id="udCommandLogsPanel" class="ud-comment-perms-panel" style="margin-top:16px;">
+            <div class="ud-manage-header">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                <span>推送日志</span>
+            </div>
+            <div id="udCommandLogsBody" class="ud-perm-body" style="padding:12px 16px;">
+                <div class="muted" style="text-align:center;padding:16px 0;font-size:13px;">加载中...</div>
+            </div>
+        </div>
         `;
 
         container.innerHTML = html;
+        this.loadCommandLogs(hwid, 1);
 
         fetch(`${this.config.apiBase}/admin/ai/usage?days=1`).then(r => r.json()).then(data => {
             const ranking = (data.user_ranking || []).find(u => (u.machine_id || '') === hwid);
@@ -5685,6 +5792,104 @@ const app = {
         });
 
         this._renderUserTagBadges(hwid, user);
+    },
+
+    /**
+     * 加载用户推送日志（分页）
+     */
+    async loadCommandLogs(machineId, page) {
+        const body = document.getElementById('udCommandLogsBody');
+        if (!body) return;
+
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/user-command-logs?machine_id=${encodeURIComponent(machineId)}&page=${page}&page_size=10`);
+            if (!res.ok) throw new Error('加载失败');
+            const data = await res.json();
+            const items = data.items || [];
+            const total = data.total || 0;
+            const totalPages = data.total_pages || 1;
+            const currentPage = data.page || 1;
+            const esc = (value) => this.escapeHtmlSafe(value === undefined || value === null ? '' : String(value));
+            const jsMachineId = JSON.stringify(String(machineId || '')).replace(/"/g, '&quot;');
+
+            if (items.length === 0) {
+                body.innerHTML = '<div class="muted" style="text-align:center;padding:16px 0;font-size:13px;">暂无推送日志</div>';
+                return;
+            }
+
+            const typeLabels = {
+                popup: { icon: 'ri-window-line', label: '弹窗' },
+                toast: { icon: 'ri-notification-3-line', label: '提示' },
+                upload_log: { icon: 'ri-file-upload-line', label: '日志' },
+                gift_theme: { icon: 'ri-gift-line', label: '主题' },
+                unknown: { icon: 'ri-question-line', label: '未知' },
+            };
+            const statusLabels = {
+                pending: { icon: 'ri-time-line', text: '待接收' },
+                delivered: { icon: 'ri-checkbox-circle-line', text: '已接收' },
+                overwritten: { icon: 'ri-forbid-2-line', text: '已覆盖' },
+            };
+
+            let html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text-muted);font-size:12px;">';
+            html += '<th style="text-align:left;padding:6px 8px;font-weight:500;">时间</th>';
+            html += '<th style="text-align:left;padding:6px 8px;font-weight:500;">类型</th>';
+            html += '<th style="text-align:left;padding:6px 8px;font-weight:500;">内容</th>';
+            html += '<th style="text-align:left;padding:6px 8px;font-weight:500;">状态</th>';
+            html += '<th style="text-align:center;padding:6px 8px;font-weight:500;">操作</th>';
+            html += '</tr></thead><tbody>';
+
+            items.forEach(item => {
+                const time = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
+                const typeMeta = typeLabels[item.command_type] || { icon: 'ri-question-line', label: item.command_type };
+                const contentRaw = String(item.content || '');
+                const contentText = contentRaw.length > 30 ? contentRaw.substring(0, 30) + '...' : (contentRaw || '-');
+                const status = statusLabels[item.status] || { icon: 'ri-question-line', text: item.status };
+                const logId = Number(item.id) || 0;
+                let statusText = `<span style="display:inline-flex;align-items:center;gap:5px;color:var(--text-muted);font-weight:500;"><i class="${esc(status.icon)}" style="font-size:14px;"></i>${esc(status.text)}</span>`;
+                if (item.status === 'delivered' && item.delivered_at) {
+                    const dt = new Date(item.delivered_at).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+                    statusText += `<br><span style="color:var(--text-muted);font-size:11px;">${esc(dt)}</span>`;
+                }
+                html += `<tr style="border-bottom:1px solid var(--border);">`;
+                html += `<td style="padding:8px;white-space:nowrap;">${esc(time)}</td>`;
+                html += `<td style="padding:8px;white-space:nowrap;"><span style="display:inline-flex;align-items:center;gap:6px;"><i class="${esc(typeMeta.icon)}" style="font-size:14px;color:var(--text-muted);"></i>${esc(typeMeta.label)}</span></td>`;
+                html += `<td style="padding:8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(contentRaw)}">${esc(contentText)}</td>`;
+                html += `<td style="padding:8px;">${statusText}</td>`;
+                html += `<td style="padding:8px;text-align:center;"><button class="btn" style="padding:2px 8px;font-size:12px;color:var(--danger);border-color:var(--danger);" onclick="app.deleteCommandLog(${logId}, ${jsMachineId})">删除</button></td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+
+            // 翻页器
+            if (totalPages > 1) {
+                html += '<div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;font-size:13px;">';
+                html += `<button class="btn" style="padding:2px 12px;font-size:12px;" ${currentPage <= 1 ? 'disabled' : ''} onclick="app.loadCommandLogs(${jsMachineId}, ${currentPage - 1})">上一页</button>`;
+                html += `<span class="muted">第 ${currentPage}/${totalPages} 页 · 共 ${total} 条</span>`;
+                html += `<button class="btn" style="padding:2px 12px;font-size:12px;" ${currentPage >= totalPages ? 'disabled' : ''} onclick="app.loadCommandLogs(${jsMachineId}, ${currentPage + 1})">下一页</button>`;
+                html += '</div>';
+            }
+
+            body.innerHTML = html;
+        } catch (err) {
+            console.warn('loadCommandLogs failed:', err);
+            body.innerHTML = '<div class="muted" style="text-align:center;padding:16px 0;font-size:13px;color:var(--danger);">加载失败</div>';
+        }
+    },
+
+    /**
+     * 删除单条推送日志
+     */
+    async deleteCommandLog(logId, machineId) {
+        try {
+            const res = await fetch(`${this.config.apiBase}/admin/user-command-log/${logId}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('删除失败');
+            this.showAlert('日志已删除', 'success');
+            this.loadCommandLogs(machineId, 1);
+        } catch (err) {
+            this.showAlert('删除失败: ' + err.message, 'danger');
+        }
     },
 
     /**

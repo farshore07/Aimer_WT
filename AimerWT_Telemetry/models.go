@@ -18,6 +18,7 @@ type TelemetryRecord struct {
 	Locale              string    `json:"locale"`
 	SessionID           int       `json:"session_id"`
 	PendingCommand      string    `json:"pending_command"`
+	PendingCommandLogID uint      `json:"pending_command_log_id" gorm:"default:0"`
 	IsStarred           bool      `json:"is_starred"`
 	IsAdmin             bool      `json:"is_admin"`
 	Tags                string    `gorm:"type:text;default:'[]'" json:"tags"`
@@ -355,6 +356,26 @@ type UserUIDMapping struct {
 
 func (UserUIDMapping) TableName() string {
 	return "user_uid_mappings"
+}
+
+// PushDeliveryLog 推送送达记录（心跳返回推送内容时写入）
+type PushDeliveryLog struct {
+	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	MachineID   string    `gorm:"uniqueIndex:idx_push_delivery_unique,priority:1;type:varchar(64);not null" json:"machine_id"`
+	PushType    string    `gorm:"uniqueIndex:idx_push_delivery_unique,priority:2;type:varchar(32);not null" json:"push_type"` // header_banner / ad_carousel / knowledge_ad / notice / alert / update
+	PushKey     string    `gorm:"uniqueIndex:idx_push_delivery_unique,priority:3;type:varchar(64);not null" json:"push_key"`  // 内容哈希或 notice_<id>
+	DeliveredAt time.Time `gorm:"autoCreateTime;index" json:"delivered_at"`
+}
+
+// UserCommandLog 用户指令操作日志（发送弹窗/提示/请求日志等）
+type UserCommandLog struct {
+	ID          uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	MachineID   string     `gorm:"index;type:varchar(64);not null" json:"machine_id"`
+	CommandType string     `gorm:"type:varchar(32);not null" json:"command_type"` // popup / toast / upload_log / gift_theme
+	Content     string     `gorm:"type:text" json:"content"`
+	Status      string     `gorm:"type:varchar(16);default:'pending'" json:"status"` // pending / delivered / overwritten
+	CreatedAt   time.Time  `gorm:"autoCreateTime;index" json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at"`
 }
 
 // UserUIDCounter 公开 UID 计数器，单行存储下一个可分配的 seq_id 值

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +19,95 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// computePushContentHash 对推送内容 JSON 序列化后取 SHA256 前 12 位
+func computePushContentHash(data interface{}) string {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])[:12]
+}
+
+func noticePushKey(item NoticeItem) string {
+	hash := computePushContentHash(map[string]interface{}{
+		"id":         item.ID,
+		"title":      item.Title,
+		"summary":    item.Summary,
+		"content":    item.Content,
+		"updated_at": item.UpdatedAt.UnixNano(),
+	})
+	if hash == "" {
+		return fmt.Sprintf("notice_%d", item.ID)
+	}
+	return fmt.Sprintf("notice_%d_%s", item.ID, hash)
+}
+
+func summarizeUserCommand(command string) (string, string) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "unknown", ""
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(command), &raw); err != nil {
+		return "unknown", command
+	}
+
+	getString := func(key string) string {
+		if value, ok := raw[key]; ok {
+			return strings.TrimSpace(fmt.Sprint(value))
+		}
+		return ""
+	}
+
+	cmdType := getString("type")
+	if cmdType == "" {
+		cmdType = "unknown"
+	}
+	content := getString("message")
+
+	switch cmdType {
+	case "upload_log":
+		parts := make([]string, 0, 2)
+		logType := getString("logType")
+		if logType == "" {
+			logType = getString("log_type")
+		}
+		if logType != "" {
+			parts = append(parts, "日志类型: "+logType)
+		}
+		if note := getString("note"); note != "" {
+			parts = append(parts, "说明: "+note)
+		}
+		content = strings.Join(parts, "；")
+	case "redeem_result":
+		if unlocked, ok := raw["theme_unlocked"].(bool); ok && unlocked {
+			cmdType = "gift_theme"
+		}
+		parts := make([]string, 0, 3)
+		if title := getString("title"); title != "" {
+			parts = append(parts, title)
+		}
+		if message := getString("message"); message != "" {
+			parts = append(parts, message)
+		}
+		if themeFile := getString("theme_file"); themeFile != "" {
+			parts = append(parts, "主题: "+themeFile)
+		}
+		content = strings.Join(parts, "；")
+	case "unlock_theme":
+		if themeFile := getString("theme_file"); themeFile != "" {
+			content = "解锁主题: " + themeFile
+		}
+	}
+
+	if content == "" {
+		content = command
+	}
+	return cmdType, content
+}
 
 // matchScope 判断用户是否匹配推送范围，支持 tag:/star/admin 前缀
 func matchScope(scope string, record TelemetryRecord) bool {
@@ -901,9 +992,57 @@ func initRouter(r *gin.Engine) {
 					c.JSON(400, gin.H{"error": "请求数据格式错误"})
 					return
 				}
+				machineID := strings.TrimSpace(req.MachineID)
+				command := strings.TrimSpace(req.Command)
+				if machineID == "" || command == "" {
+					c.JSON(400, gin.H{"error": "machine_id 和 command 为必填"})
+					return
+				}
 
-				err := db.Model(&TelemetryRecord{}).Where("machine_id = ?", req.MachineID).Update("pending_command", req.Command).Error
+				cmdType, cmdContent := summarizeUserCommand(command)
+
+				err := db.Transaction(func(tx *gorm.DB) error {
+					var existing TelemetryRecord
+					if err := tx.Select("machine_id", "pending_command", "pending_command_log_id").
+						Where("machine_id = ?", machineID).First(&existing).Error; err != nil {
+						return err
+					}
+
+					if existing.PendingCommand != "" && existing.PendingCommandLogID > 0 {
+						if err := tx.Model(&UserCommandLog{}).Where("id = ? AND status = ?", existing.PendingCommandLogID, "pending").
+							Update("status", "overwritten").Error; err != nil {
+							return err
+						}
+					}
+
+					logEntry := UserCommandLog{
+						MachineID:   machineID,
+						CommandType: cmdType,
+						Content:     cmdContent,
+						Status:      "pending",
+					}
+					if err := tx.Create(&logEntry).Error; err != nil {
+						return err
+					}
+
+					updateTx := tx.Model(&TelemetryRecord{}).Where("machine_id = ?", machineID).
+						UpdateColumns(map[string]interface{}{
+							"pending_command":        command,
+							"pending_command_log_id": logEntry.ID,
+						})
+					if updateTx.Error != nil {
+						return updateTx.Error
+					}
+					if updateTx.RowsAffected == 0 {
+						return gorm.ErrRecordNotFound
+					}
+					return nil
+				})
 				if err != nil {
+					if err == gorm.ErrRecordNotFound {
+						c.JSON(404, gin.H{"error": "用户不存在"})
+						return
+					}
 					c.JSON(500, gin.H{"error": "更新失败"})
 					return
 				}
@@ -1131,6 +1270,215 @@ func initRouter(r *gin.Engine) {
 				c.JSON(200, gin.H{"status": "success", "url": "/uploads/" + filename})
 			})
 
+			// 推送覆盖率统计 API
+			admin.GET("/push-stats", func(c *gin.Context) {
+				var totalUsers int64
+				db.Model(&TelemetryRecord{}).Count(&totalUsers)
+
+				type pushStatItem struct {
+					PushType       string  `json:"push_type"`
+					PushKey        string  `json:"push_key"`
+					Title          string  `json:"title"`
+					Description    string  `json:"description"`
+					Scope          string  `json:"scope"`
+					TargetUsers    int64   `json:"target_users"`
+					DeliveredUsers int64   `json:"delivered_users"`
+					CoverageTarget float64 `json:"coverage_target"`
+					CoverageTotal  float64 `json:"coverage_total"`
+					Active         bool    `json:"active"`
+				}
+
+				var items []pushStatItem
+
+				// 计算特定 scope 下的目标用户数
+				countScopeUsers := func(scope string) int64 {
+					if scope == "" || scope == "all" {
+						return totalUsers
+					}
+					var count int64
+					query := db.Model(&TelemetryRecord{})
+					switch {
+					case scope == "star":
+						query.Where("is_starred = ?", true).Count(&count)
+					case scope == "admin":
+						query.Where("is_admin = ?", true).Count(&count)
+					case strings.HasPrefix(scope, "tag:"):
+						tagName := strings.TrimPrefix(scope, "tag:")
+						query.Where("tags LIKE ?", "%\""+tagName+"\"%").Count(&count)
+					default:
+						query.Where("version = ?", scope).Count(&count)
+					}
+					return count
+				}
+
+				countDelivered := func(pushType, pushKey string) int64 {
+					var count int64
+					db.Model(&PushDeliveryLog{}).Where("push_type = ? AND push_key = ?", pushType, pushKey).Count(&count)
+					return count
+				}
+
+				calcCoverage := func(delivered, target int64) float64 {
+					if target <= 0 {
+						return 0
+					}
+					return float64(delivered) / float64(target) * 100
+				}
+
+				// Header Banner 轮播
+				if sysConfig.NoticeActive && len(sysConfig.BannerItems) > 0 {
+					hash := computePushContentHash(sysConfig.BannerItems)
+					scope := sysConfig.NoticeScope
+					target := countScopeUsers(scope)
+					delivered := countDelivered("header_banner", hash)
+					items = append(items, pushStatItem{
+						PushType: "header_banner", PushKey: hash,
+						Title: "Banner 轮播广告", Description: fmt.Sprintf("%d 条轮播项", len(sysConfig.BannerItems)),
+						Scope: scope, TargetUsers: target, DeliveredUsers: delivered,
+						CoverageTarget: calcCoverage(delivered, target), CoverageTotal: calcCoverage(delivered, totalUsers),
+						Active: true,
+					})
+				} else {
+					items = append(items, pushStatItem{PushType: "header_banner", Title: "Banner 轮播广告", Active: false})
+				}
+
+				// 紧急弹窗通知
+				if sysConfig.AlertActive && sysConfig.AlertContent != "" {
+					hash := computePushContentHash(map[string]string{"title": sysConfig.AlertTitle, "content": sysConfig.AlertContent})
+					scope := sysConfig.AlertScope
+					target := countScopeUsers(scope)
+					delivered := countDelivered("alert", hash)
+					items = append(items, pushStatItem{
+						PushType: "alert", PushKey: hash,
+						Title: "紧急弹窗通知", Description: sysConfig.AlertTitle,
+						Scope: scope, TargetUsers: target, DeliveredUsers: delivered,
+						CoverageTarget: calcCoverage(delivered, target), CoverageTotal: calcCoverage(delivered, totalUsers),
+						Active: true,
+					})
+				} else {
+					items = append(items, pushStatItem{PushType: "alert", Title: "紧急弹窗通知", Active: false})
+				}
+
+				// 更新提示
+				if sysConfig.UpdateActive && sysConfig.UpdateContent != "" {
+					hash := computePushContentHash(map[string]string{"content": sysConfig.UpdateContent, "url": sysConfig.UpdateUrl})
+					scope := sysConfig.UpdateScope
+					target := countScopeUsers(scope)
+					delivered := countDelivered("update", hash)
+					items = append(items, pushStatItem{
+						PushType: "update", PushKey: hash,
+						Title: "更新提示", Description: sysConfig.UpdateContent,
+						Scope: scope, TargetUsers: target, DeliveredUsers: delivered,
+						CoverageTarget: calcCoverage(delivered, target), CoverageTotal: calcCoverage(delivered, totalUsers),
+						Active: true,
+					})
+				} else {
+					items = append(items, pushStatItem{PushType: "update", Title: "更新提示", Active: false})
+				}
+
+				// 广告轮播
+				adCarouselItems := LoadAdCarouselItems()
+				if len(adCarouselItems) > 0 {
+					hash := computePushContentHash(adCarouselItems)
+					delivered := countDelivered("ad_carousel", hash)
+					items = append(items, pushStatItem{
+						PushType: "ad_carousel", PushKey: hash,
+						Title: "广告轮播", Description: fmt.Sprintf("%d 条轮播图", len(adCarouselItems)),
+						Scope: "all", TargetUsers: totalUsers, DeliveredUsers: delivered,
+						CoverageTarget: calcCoverage(delivered, totalUsers), CoverageTotal: calcCoverage(delivered, totalUsers),
+						Active: true,
+					})
+				} else {
+					items = append(items, pushStatItem{PushType: "ad_carousel", Title: "广告轮播", Active: false})
+				}
+
+				// 信息库广告
+				kbRaw := LoadKnowledgeAdsConfig()
+				if kbRaw != "" {
+					var kbConfig KnowledgeAdsConfig
+					if err := json.Unmarshal([]byte(kbRaw), &kbConfig); err == nil {
+						enabledCount := 0
+						for _, item := range kbConfig.Items {
+							if item.Enabled {
+								enabledCount++
+							}
+						}
+						hash := computePushContentHash(kbRaw)
+						delivered := countDelivered("knowledge_ad", hash)
+						items = append(items, pushStatItem{
+							PushType: "knowledge_ad", PushKey: hash,
+							Title: "信息库广告", Description: fmt.Sprintf("%d/%d 个广告位启用", enabledCount, len(kbConfig.Items)),
+							Scope: "all", TargetUsers: totalUsers, DeliveredUsers: delivered,
+							CoverageTarget: calcCoverage(delivered, totalUsers), CoverageTotal: calcCoverage(delivered, totalUsers),
+							Active: enabledCount > 0,
+						})
+					}
+				} else {
+					items = append(items, pushStatItem{PushType: "knowledge_ad", Title: "信息库广告", Active: false})
+				}
+
+				// 公告列表（前 5 条最新公告）
+				var latestNotices []NoticeItem
+				db.Order("id desc").Limit(5).Find(&latestNotices)
+				for _, n := range latestNotices {
+					pushKey := noticePushKey(n)
+					delivered := countDelivered("notice", pushKey)
+					items = append(items, pushStatItem{
+						PushType: "notice", PushKey: pushKey,
+						Title: "公告", Description: n.Title,
+						Scope: "all", TargetUsers: totalUsers, DeliveredUsers: delivered,
+						CoverageTarget: calcCoverage(delivered, totalUsers), CoverageTotal: calcCoverage(delivered, totalUsers),
+						Active: true,
+					})
+				}
+
+				c.JSON(200, gin.H{"total_users": totalUsers, "items": items})
+			})
+
+			// 用户指令操作日志查询 API（分页）
+			admin.GET("/user-command-logs", func(c *gin.Context) {
+				machineID := strings.TrimSpace(c.Query("machine_id"))
+				if machineID == "" {
+					c.JSON(400, gin.H{"error": "缺少 machine_id"})
+					return
+				}
+				page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+				pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+				if page < 1 {
+					page = 1
+				}
+				if pageSize < 1 || pageSize > 50 {
+					pageSize = 10
+				}
+
+				var total int64
+				db.Model(&UserCommandLog{}).Where("machine_id = ?", machineID).Count(&total)
+
+				var logs []UserCommandLog
+				db.Where("machine_id = ?", machineID).
+					Order("id desc").
+					Offset((page - 1) * pageSize).
+					Limit(pageSize).
+					Find(&logs)
+
+				totalPages := (total + int64(pageSize) - 1) / int64(pageSize)
+				c.JSON(200, gin.H{
+					"items":       logs,
+					"total":       total,
+					"page":        page,
+					"page_size":   pageSize,
+					"total_pages": totalPages,
+				})
+			})
+
+			// 删除单条用户指令日志
+			admin.DELETE("/user-command-log/:id", func(c *gin.Context) {
+				id := c.Param("id")
+				if err := db.Delete(&UserCommandLog{}, id).Error; err != nil {
+					c.JSON(500, gin.H{"error": "删除失败"})
+					return
+				}
+				c.JSON(200, gin.H{"status": "success"})
+			})
 			// 公告列表 CRUD API
 			admin.GET("/notices", func(c *gin.Context) {
 				var items []NoticeItem
@@ -2021,7 +2369,7 @@ func initRouter(r *gin.Engine) {
 				}
 			}
 
-			if err := tx.Select("id", "version", "pending_command", "is_starred", "is_admin", "tags").
+			if err := tx.Select("id", "version", "pending_command", "pending_command_log_id", "is_starred", "is_admin", "tags").
 				Where("machine_id = ?", record.MachineID).
 				First(&dbRecord).Error; err != nil {
 				return err
@@ -2067,7 +2415,15 @@ func initRouter(r *gin.Engine) {
 
 		pendingCmd := dbRecord.PendingCommand
 		if pendingCmd != "" {
-			db.Model(&TelemetryRecord{}).Where("machine_id = ?", record.MachineID).Update("pending_command", "")
+			// 清空待发送命令及关联日志 ID，同时将日志状态更新为 delivered
+			logID := dbRecord.PendingCommandLogID
+			db.Model(&TelemetryRecord{}).Where("machine_id = ?", record.MachineID).
+				Updates(map[string]interface{}{"pending_command": "", "pending_command_log_id": 0})
+			if logID > 0 {
+				now := time.Now()
+				db.Model(&UserCommandLog{}).Where("id = ? AND status = ?", logID, "pending").
+					Updates(map[string]interface{}{"status": "delivered", "delivered_at": now})
+			}
 		}
 
 		response := gin.H{
@@ -2097,6 +2453,10 @@ func initRouter(r *gin.Engine) {
 
 		// 构建广告轮播数据供客户端同步（图片路径补全为完整 URL）
 		items := LoadAdCarouselItems()
+		adCarouselPushKey := ""
+		if len(items) > 0 {
+			adCarouselPushKey = computePushContentHash(items)
+		}
 		scheme := "http"
 		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 			scheme = "https"
@@ -2115,7 +2475,17 @@ func initRouter(r *gin.Engine) {
 
 		// 信息库广告位数据下发
 		kbRaw := LoadKnowledgeAdsConfig()
+		kbPushKey := ""
 		if kbRaw != "" {
+			var kbConfig KnowledgeAdsConfig
+			if err := json.Unmarshal([]byte(kbRaw), &kbConfig); err == nil {
+				for _, item := range kbConfig.Items {
+					if item.Enabled {
+						kbPushKey = computePushContentHash(kbRaw)
+						break
+					}
+				}
+			}
 			var kbParsed map[string]interface{}
 			if err := json.Unmarshal([]byte(kbRaw), &kbParsed); err == nil {
 				// 补全图片路径
@@ -2138,6 +2508,10 @@ func initRouter(r *gin.Engine) {
 		var noticeItems []NoticeItem
 		db.Order("sort_order asc, id desc").Find(&noticeItems)
 		response["notice_items"] = noticeItems
+		noticePushKeys := make([]string, 0, len(noticeItems))
+		for _, item := range noticeItems {
+			noticePushKeys = append(noticePushKeys, noticePushKey(item))
+		}
 
 		// 公告反应摘要（emoji + count，不含用户列表）
 		type reactionSummary struct {
@@ -2148,6 +2522,49 @@ func initRouter(r *gin.Engine) {
 		var rawSummaries []reactionSummary
 		db.Model(&NoticeReaction{}).Select("notice_id, emoji, count(*) as count").Group("notice_id, emoji").Scan(&rawSummaries)
 		response["notice_reactions"] = rawSummaries
+
+		// 异步记录推送送达（避免影响心跳响应速度）
+		go func(machineID string, cfg SystemConfig, adPushKey string, kbPushKey string, noticeKeys []string) {
+			// Header Banner 轮播
+			if cfg.NoticeActive && len(cfg.BannerItems) > 0 {
+				hash := computePushContentHash(cfg.BannerItems)
+				if hash != "" {
+					db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+						machineID, "header_banner", hash, time.Now())
+				}
+			}
+			// 紧急弹窗通知
+			if cfg.AlertActive && cfg.AlertContent != "" {
+				hash := computePushContentHash(map[string]string{"title": cfg.AlertTitle, "content": cfg.AlertContent})
+				if hash != "" {
+					db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+						machineID, "alert", hash, time.Now())
+				}
+			}
+			// 更新提示
+			if cfg.UpdateActive && cfg.UpdateContent != "" {
+				hash := computePushContentHash(map[string]string{"content": cfg.UpdateContent, "url": cfg.UpdateUrl})
+				if hash != "" {
+					db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+						machineID, "update", hash, time.Now())
+				}
+			}
+			// 广告轮播
+			if adPushKey != "" {
+				db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+					machineID, "ad_carousel", adPushKey, time.Now())
+			}
+			// 信息库广告
+			if kbPushKey != "" {
+				db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+					machineID, "knowledge_ad", kbPushKey, time.Now())
+			}
+			// 公告列表（每条独立追踪）
+			for _, pushKey := range noticeKeys {
+				db.Exec("INSERT OR IGNORE INTO push_delivery_logs (machine_id, push_type, push_key, delivered_at) VALUES (?, ?, ?, ?)",
+					machineID, "notice", pushKey, time.Now())
+			}
+		}(record.MachineID, clientConfig, adCarouselPushKey, kbPushKey, noticePushKeys)
 
 		c.JSON(200, response)
 	})

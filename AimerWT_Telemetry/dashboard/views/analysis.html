@@ -2,10 +2,31 @@
     <div class="app">
         <div class="topbar">
             <div class="top-actions" style="margin-left: auto;">
-                <button class="btn" onclick="app.showAlert('分析数据已刷新', 'success')">刷新数据</button>
+                <button class="btn" onclick="app.loadPushStats()">刷新数据</button>
             </div>
         </div>
-        <div class="panel">
+        <div class="grid">
+            <div class="panel span-12" id="pushStatsPanel" style="display:none;">
+                <div class="panel-header">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <div style="width:32px;height:32px;border-radius:10px;background:rgba(239,68,68,0.08);color:#ef4444;display:flex;align-items:center;justify-content:center;">
+                            <i class="ri-send-plane-line" style="font-size:16px;"></i>
+                        </div>
+                        <div>
+                            <div class="panel-title">推送覆盖率</div>
+                            <div class="panel-sub" id="pushStatsSub">各推送渠道送达情况</div>
+                        </div>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="btn" onclick="app.loadPushStats()" title="刷新推送数据">刷新</button>
+                    </div>
+                </div>
+                <div id="pushStatsContent" style="padding:0 20px 16px;">
+                    <div class="muted" style="text-align:center;padding:24px 0;">加载中...</div>
+                </div>
+            </div>
+        </div>
+        <div class="panel" id="analysisEmptyPanel">
             <div class="panel-header">
                 <div class="panel-title">数据分析</div>
             </div>
