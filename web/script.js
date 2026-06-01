@@ -405,10 +405,9 @@ const app = {
 
     async loadThemeList() {
         const dropdown = document.getElementById('theme-select-dropdown');
-        const textEl = document.getElementById('theme-select-text');
         if (!dropdown) return;
 
-        this.themeListData = [{ filename: 'default.json', name: '默认主题', version: '', author: 'System' }];
+        this.themeListData = [{ filename: 'default.json', name: '默认主题', version: '', author: 'System', source: 'builtin' }];
 
         try {
             const themes = await pywebview.api.get_theme_list();
@@ -423,26 +422,73 @@ const app = {
         }
     },
 
+    formatThemeLabel(theme) {
+        if (!theme) return '';
+        if (theme.filename === 'default.json') return this.t('theme.default');
+        const hasAuthor = theme.author && theme.author !== 'System';
+        const themeLabel = hasAuthor
+            ? (theme.version ? `${theme.name} (v${theme.version}) - by ${theme.author}` : `${theme.name} - by ${theme.author}`)
+            : theme.name;
+        return theme.status === 'inactive' ? `${themeLabel}（已下架）` : themeLabel;
+    },
+
     renderThemeDropdown() {
         const dropdown = document.getElementById('theme-select-dropdown');
-        const textEl = document.getElementById('theme-select-text');
         if (!dropdown) return;
 
         dropdown.innerHTML = '';
-        this.themeListData.forEach(theme => {
+        const builtinThemes = this.themeListData.filter(theme => theme.source !== 'remote');
+        const remoteThemes = this.themeListData.filter(theme => theme.source === 'remote');
+
+        const appendThemeOption = (theme) => {
             const option = document.createElement('div');
             option.className = 'custom-select-option';
+            if (theme.source === 'remote') option.classList.add('remote-theme-option');
             option.dataset.value = theme.filename;
-            const hasAuthor = theme.author && theme.author !== 'System';
-            const themeLabel = hasAuthor
-                ? (theme.version ? `${theme.name} (v${theme.version}) - by ${theme.author}` : `${theme.name} - by ${theme.author}`)
-                : theme.name;
-            option.textContent = theme.filename === 'default.json'
-                ? this.t('theme.default')
-                : themeLabel;
+            option.textContent = this.formatThemeLabel(theme);
             option.onclick = () => this.selectTheme(theme.filename);
             dropdown.appendChild(option);
-        });
+        };
+
+        builtinThemes.forEach(appendThemeOption);
+        if (remoteThemes.length > 0) {
+            const separator = document.createElement('div');
+            separator.className = 'custom-select-section';
+            separator.textContent = '远程主题';
+            dropdown.appendChild(separator);
+            remoteThemes.forEach(appendThemeOption);
+        }
+    },
+
+    async refreshRemoteThemes() {
+        const btn = document.getElementById('btn-sync-remote-themes');
+        if (btn?.disabled) return;
+        if (btn) {
+            btn.disabled = true;
+            btn.classList.add('loading');
+        }
+        try {
+            const result = await pywebview.api.sync_remote_themes();
+            const message = result?.message || '远程主题同步完成';
+            if (result?.success) {
+                if ((result.added || result.updated) && typeof this.showInfoToast === 'function') {
+                    this.showInfoToast('主题', message);
+                }
+            } else if (typeof this.showWarnToast === 'function') {
+                this.showWarnToast('主题', message);
+            }
+            await this.loadThemeList();
+        } catch (e) {
+            console.error("Failed to sync remote themes", e);
+            if (typeof this.showWarnToast === 'function') {
+                this.showWarnToast('主题', '远程主题同步失败');
+            }
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.classList.remove('loading');
+            }
+        }
     },
 
     toggleThemeDropdown() {
@@ -464,13 +510,7 @@ const app = {
         const textEl = document.getElementById('theme-select-text');
         const theme = this.themeListData.find(t => t.filename === filename);
         if (textEl && theme) {
-            const hasAuthor = theme.author && theme.author !== 'System';
-            const themeLabel = hasAuthor
-                ? (theme.version ? `${theme.name} (v${theme.version}) - by ${theme.author}` : `${theme.name} - by ${theme.author}`)
-                : theme.name;
-            textEl.textContent = filename === 'default.json'
-                ? this.t('theme.default')
-                : themeLabel;
+            textEl.textContent = this.formatThemeLabel(theme);
         }
 
         document.querySelectorAll('#theme-select-dropdown .custom-select-option').forEach(opt => {

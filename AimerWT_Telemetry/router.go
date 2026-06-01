@@ -407,6 +407,8 @@ func initRouter(r *gin.Engine) {
 			path == "/notice-comment-like" ||
 			path == "/notice-comment-report" ||
 			path == "/latest-version" ||
+			path == "/api/themes" ||
+			strings.HasPrefix(path, "/api/themes/") ||
 			strings.HasPrefix(path, "/api/ai/") ||
 			strings.HasPrefix(path, "/notice-comments/") ||
 			strings.HasPrefix(path, "/notice-reactions/") {
@@ -458,8 +460,11 @@ func initRouter(r *gin.Engine) {
 			"/notice-reaction":     true,
 			"/notice-comment":      true,
 			"/notice-comment-like": true,
+			"/api/themes":          true,
 		}
-		protectedByPrefix := strings.HasPrefix(path, "/notice-comments/") || strings.HasPrefix(path, "/notice-reactions/")
+		protectedByPrefix := strings.HasPrefix(path, "/notice-comments/") ||
+			strings.HasPrefix(path, "/notice-reactions/") ||
+			strings.HasPrefix(path, "/api/themes/")
 		if protectedClientPaths[path] || protectedByPrefix {
 			if isValidAdminBasicAuth(c.Request) {
 				c.Next()
@@ -1724,6 +1729,9 @@ func initRouter(r *gin.Engine) {
 
 		// 评论权重配置路由
 		initCommentWeightRoutes(admin)
+
+		// 远程主题管理与客户端同步路由
+		initRemoteThemeRoutes(r, admin)
 
 		// ==================== 广告统计 API ====================
 

@@ -82,6 +82,10 @@ func WriteAuditLog(logType, actorID, actorRole, targetID string, refID uint, act
 
 // WriteAuditLogAsync 异步写入（不阻塞调用方）
 func WriteAuditLogAsync(logType, actorID, actorRole, targetID string, refID uint, action, detail, version, ip string) {
+	if gin.Mode() == gin.TestMode {
+		WriteAuditLog(logType, actorID, actorRole, targetID, refID, action, detail, version, ip)
+		return
+	}
 	go WriteAuditLog(logType, actorID, actorRole, targetID, refID, action, detail, version, ip)
 }
 
@@ -292,7 +296,7 @@ func initAuditLogRoutes(r *gin.Engine) {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"storage":       "telemetry.db → audit_logs 表",
+			"storage":        "telemetry.db → audit_logs 表",
 			"total_entries":  total,
 			"type_breakdown": typeMap,
 			"oldest_entry":   oldest.Timestamp.Format("2006-01-02 15:04:05"),

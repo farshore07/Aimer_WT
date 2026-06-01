@@ -87,6 +87,7 @@ AGREEMENT_VERSION = "2026-05-29-v3-beta"
 DEFAULT_PENDING_DIR_NAME = "待解压区"
 DEFAULT_RESOURCE_ROOT_DIR_NAME = "AimerWT资源库"
 DEFAULT_VOICE_LIBRARY_DIR_NAME = "WT语音包库"
+REMOTE_THEME_FILENAME_RE = re.compile(r"^remote_[a-z0-9_]+\.json$")
 
 # 资源目录定位：打包环境使用 _MEIPASS，开发环境使用源码目录
 if getattr(sys, "frozen", False):
@@ -101,6 +102,32 @@ DIAGNOSTIC_LOG_PATH = DIAGNOSTIC_TOOL_DIR / "diagnostic_events.jsonl"
 _diagnostic_recorder = None
 _diagnostic_recorder_checked = False
 _diagnostic_logger_attached = False
+
+
+def _get_remote_themes_dir() -> Path:
+    return get_docs_data_dir() / "themes" / "remote"
+
+
+def _is_remote_theme_filename(filename: str) -> bool:
+    return bool(REMOTE_THEME_FILENAME_RE.fullmatch(str(filename or "").strip()))
+
+
+def _get_remote_theme_path(filename: str) -> Path | None:
+    filename = str(filename or "").strip()
+    if not _is_remote_theme_filename(filename):
+        return None
+    themes_dir = _get_remote_themes_dir().resolve()
+    theme_path = (themes_dir / filename).resolve()
+    try:
+        if os.path.commonpath([str(theme_path), str(themes_dir)]) != str(themes_dir):
+            return None
+    except ValueError:
+        return None
+    return theme_path
+
+
+def _canonical_remote_theme_json(theme_data: dict) -> str:
+    return json.dumps(theme_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _load_diagnostic_recorder():
@@ -192,6 +219,17 @@ class _ThemeUnlockFallbackService:
             return True
         if filename in self._hidden_theme_files:
             return filename in set(self._cfg_mgr.get_unlocked_themes())
+        if _is_remote_theme_filename(filename):
+            cache = self._cfg_mgr.get_remote_themes_cache()
+            meta = cache.get(filename, {})
+            theme_path = _get_remote_theme_path(filename)
+            if not isinstance(meta, dict) or not theme_path or not theme_path.exists():
+                return False
+            visibility = str(meta.get("visibility") or "public").strip()
+            status = str(meta.get("status") or "active").strip()
+            if status != "active":
+                return filename == self._cfg_mgr.get_active_theme()
+            return visibility == "public" or filename in set(self._cfg_mgr.get_unlocked_themes())
         return False
 
     def filter_theme_list(self, theme_list: list[dict]) -> list[dict]:
@@ -199,6 +237,9 @@ class _ThemeUnlockFallbackService:
 
     def get_accessible_active_theme(self, filename: str) -> str:
         filename = self._normalize_filename(filename) or "default.json"
+        if _is_remote_theme_filename(filename):
+            theme_path = _get_remote_theme_path(filename)
+            return filename if theme_path and theme_path.exists() and self.is_theme_accessible(filename) else "default.json"
         theme_path = WEB_DIR / "themes" / filename
         return filename if theme_path.exists() and self.is_theme_accessible(filename) else "default.json"
 
@@ -209,6 +250,26 @@ class _ThemeUnlockFallbackService:
         filename = self._normalize_filename(filename)
         if not filename:
             return {"success": False, "message": "缺少主题文件名"}
+
+        if _is_remote_theme_filename(filename):
+            cache = self._cfg_mgr.get_remote_themes_cache()
+            meta = cache.get(filename, {}) if isinstance(cache, dict) else {}
+            theme_path = _get_remote_theme_path(filename)
+            if not isinstance(meta, dict) or not theme_path or not theme_path.exists():
+                return {"success": False, "message": f"远程主题 {filename} 未下载到本地"}
+            unlocked = set(self._cfg_mgr.get_unlocked_themes())
+            already_unlocked = filename in unlocked
+            if not already_unlocked:
+                unlocked.add(filename)
+                valid = [name for name in self._hidden_theme_files if name in unlocked]
+                valid.extend(sorted(name for name in unlocked if _is_remote_theme_filename(name)))
+                self._cfg_mgr.set_unlocked_themes(valid)
+            return {
+                "success": True,
+                "already_unlocked": already_unlocked,
+                "theme_file": filename,
+                "message": "远程主题已可用",
+            }
 
         if filename not in self._hidden_theme_files:
             return {"success": False, "message": f"主题 {filename} 不在隐藏主题列表中"}
@@ -222,6 +283,7 @@ class _ThemeUnlockFallbackService:
         if not already_unlocked:
             unlocked.add(filename)
             valid = [name for name in self._hidden_theme_files if name in unlocked]
+            valid.extend(sorted(name for name in unlocked if _is_remote_theme_filename(name)))
             self._cfg_mgr.set_unlocked_themes(valid)
 
         return {
@@ -234,6 +296,7 @@ class _ThemeUnlockFallbackService:
     def reset_unlocked_themes(self) -> bool:
         unlocked = set(self._cfg_mgr.get_unlocked_themes())
         preserved = [name for name in self._hidden_theme_files if name == "supporter.json" and name in unlocked]
+        preserved.extend(sorted(name for name in unlocked if _is_remote_theme_filename(name)))
         return self._cfg_mgr.set_unlocked_themes(preserved)
 
 
@@ -472,6 +535,7 @@ class AppApi:
         self._sound_replace = SoundReplaceService(self._get_sound_replace_backup_root())
         self._audition_items_cache = {}
         self._audition_scan_lock = threading.Lock()
+        self._remote_theme_sync_lock = threading.Lock()
 
         # ========== 本地测试配置 ==========
         # 设置为 True 启用本地遥测测试（连接 localhost:8082）
@@ -1234,7 +1298,14 @@ class AppApi:
                     # 如果包含主题解锁，刷新主题列表
                     if cmd.get("theme_unlocked"):
                         theme_file = cmd.get("theme_file", "")
-                        if theme_file and self._theme_unlock:
+                        remote_theme = cmd.get("remote_theme")
+                        if isinstance(remote_theme, dict):
+                            save_result = self._save_redeemed_remote_theme(remote_theme)
+                            if save_result.get("success"):
+                                self._logger.info(f"[CMD] 远程主题已保存: {theme_file}")
+                            else:
+                                self._logger.error(f"[CMD] 远程主题保存失败: {save_result.get('message')}")
+                        elif theme_file and self._theme_unlock and not _is_remote_theme_filename(theme_file):
                             self._theme_unlock.unlock_theme_by_name(theme_file)
                         self._window.evaluate_js("if(window.app && app.loadThemeList) app.loadThemeList()")
                     self._window.evaluate_js(safe_js_call("showAlert", title, message, "success"))
@@ -5746,42 +5817,337 @@ class AppApi:
         return {"success": bool(ok)}
 
     # --- 主题管理 API ---
+    def _get_remote_theme_machine_id(self) -> str:
+        tm = get_telemetry_manager()
+        if not tm:
+            return ""
+        try:
+            return str(tm.get_machine_id() or "").strip()
+        except Exception:
+            return ""
+
+    def _normalize_remote_theme_meta(self, item: dict) -> dict | None:
+        if not isinstance(item, dict):
+            return None
+        filename = str(item.get("filename") or "").strip()
+        if not _is_remote_theme_filename(filename):
+            return None
+        try:
+            sort_order = int(item.get("sort_order") or 100)
+        except (TypeError, ValueError):
+            sort_order = 100
+        try:
+            file_size = int(item.get("file_size") or 0)
+        except (TypeError, ValueError):
+            file_size = 0
+        return {
+            "filename": filename,
+            "name": str(item.get("name") or filename),
+            "author": str(item.get("author") or ""),
+            "version": str(item.get("version") or ""),
+            "visibility": str(item.get("visibility") or "public"),
+            "status": str(item.get("status") or "active"),
+            "sort_order": sort_order,
+            "checksum": str(item.get("checksum") or ""),
+            "file_size": file_size,
+            "description": str(item.get("description") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+
+    def get_remote_theme_list(self):
+        # 从遥测服务读取可公开分发的远程主题元数据。
+        machine_id = self._get_remote_theme_machine_id()
+        if not machine_id:
+            return {"success": False, "themes": [], "message": "无法识别当前设备"}
+
+        result = self.request_telemetry_json(
+            "/api/themes",
+            method="GET",
+            params={"machine_id": machine_id},
+            timeout_ms=10000,
+        )
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "themes": [],
+                "message": result.get("error") or "远程主题列表读取失败",
+            }
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        raw_themes = data.get("themes", [])
+        themes = []
+        if isinstance(raw_themes, list):
+            for item in raw_themes:
+                meta = self._normalize_remote_theme_meta(item)
+                if meta:
+                    themes.append(meta)
+        return {"success": True, "themes": themes, "message": "远程主题列表已更新"}
+
+    def download_remote_theme(self, filename):
+        # 下载单个远程主题到用户数据目录，并用服务端 checksum 校验内容。
+        filename = str(filename or "").strip()
+        if not _is_remote_theme_filename(filename):
+            return {"success": False, "message": "远程主题文件名无效"}
+
+        machine_id = self._get_remote_theme_machine_id()
+        if not machine_id:
+            return {"success": False, "message": "无法识别当前设备"}
+
+        result = self.request_telemetry_json(
+            f"/api/themes/{filename}",
+            method="GET",
+            params={"machine_id": machine_id},
+            timeout_ms=12000,
+        )
+        if not result.get("ok"):
+            return {"success": False, "message": result.get("error") or "远程主题下载失败"}
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        theme_data = data.get("theme_data")
+        theme_text = str(data.get("theme_text") or "").strip()
+        checksum = str(data.get("checksum") or "").strip()
+        try:
+            file_size = int(data.get("file_size") or 0)
+        except (TypeError, ValueError):
+            file_size = 0
+        if not checksum:
+            return {"success": False, "message": "远程主题响应不完整"}
+
+        if theme_text:
+            try:
+                parsed_theme = json.loads(theme_text)
+            except Exception:
+                return {"success": False, "message": "远程主题 JSON 无效"}
+            if not isinstance(parsed_theme, dict):
+                return {"success": False, "message": "远程主题必须是 JSON 对象"}
+        elif isinstance(theme_data, dict):
+            theme_text = _canonical_remote_theme_json(theme_data)
+        else:
+            return {"success": False, "message": "远程主题响应不完整"}
+
+        actual_checksum = hashlib.sha256(theme_text.encode("utf-8")).hexdigest()
+        if actual_checksum != checksum:
+            return {"success": False, "message": "远程主题校验失败"}
+        if file_size > 0 and len(theme_text.encode("utf-8")) != file_size:
+            return {"success": False, "message": "远程主题大小校验失败"}
+
+        theme_path = _get_remote_theme_path(filename)
+        if not theme_path:
+            return {"success": False, "message": "远程主题保存路径无效"}
+
+        try:
+            theme_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = theme_path.with_suffix(theme_path.suffix + ".tmp")
+            tmp_path.write_text(theme_text, encoding="utf-8")
+            os.replace(tmp_path, theme_path)
+        except Exception as exc:
+            log.error(f"保存远程主题 {filename} 失败: {exc}")
+            return {"success": False, "message": "远程主题保存失败"}
+
+        return {"success": True, "filename": filename, "checksum": checksum, "file_size": file_size}
+
+    def _save_redeemed_remote_theme(self, payload):
+        # 将兑换码返回的服务器主题保存到用户数据目录，并写入本地授权缓存。
+        if not isinstance(payload, dict):
+            return {"success": False, "message": "远程主题数据格式错误"}
+
+        filename = str(payload.get("filename") or "").strip()
+        if not _is_remote_theme_filename(filename):
+            return {"success": False, "message": "远程主题文件名无效"}
+
+        theme_text = str(payload.get("theme_text") or "").strip()
+        theme_data = payload.get("theme_data")
+        if theme_text:
+            try:
+                parsed = json.loads(theme_text)
+            except Exception:
+                return {"success": False, "message": "远程主题 JSON 无效"}
+            if not isinstance(parsed, dict):
+                return {"success": False, "message": "远程主题必须是 JSON 对象"}
+        elif isinstance(theme_data, dict):
+            theme_text = _canonical_remote_theme_json(theme_data)
+        else:
+            return {"success": False, "message": "远程主题内容缺失"}
+
+        checksum = str(payload.get("checksum") or "").strip()
+        if checksum:
+            actual_checksum = hashlib.sha256(theme_text.encode("utf-8")).hexdigest()
+            if actual_checksum != checksum:
+                return {"success": False, "message": "远程主题校验失败"}
+        try:
+            file_size = int(payload.get("file_size") or 0)
+        except (TypeError, ValueError):
+            file_size = 0
+        if file_size > 0 and len(theme_text.encode("utf-8")) != file_size:
+            return {"success": False, "message": "远程主题大小校验失败"}
+
+        theme_path = _get_remote_theme_path(filename)
+        if not theme_path:
+            return {"success": False, "message": "远程主题保存路径无效"}
+
+        meta = self._normalize_remote_theme_meta(payload)
+        if not meta:
+            return {"success": False, "message": "远程主题元数据无效"}
+
+        try:
+            theme_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = theme_path.with_suffix(theme_path.suffix + ".tmp")
+            tmp_path.write_text(theme_text, encoding="utf-8")
+            os.replace(tmp_path, theme_path)
+        except Exception as exc:
+            log.error(f"保存兑换远程主题 {filename} 失败: {exc}")
+            return {"success": False, "message": "远程主题保存失败"}
+
+        cache = self._cfg_mgr.get_remote_themes_cache()
+        cache[filename] = meta
+        self._cfg_mgr.set_remote_themes_cache(cache)
+
+        unlocked = self._cfg_mgr.get_unlocked_themes()
+        if filename not in unlocked:
+            unlocked.append(filename)
+            self._cfg_mgr.set_unlocked_themes(unlocked)
+
+        return {"success": True, "filename": filename}
+
+    def sync_remote_themes(self):
+        # 同步公开远程主题到用户数据目录，本地缓存成功后可离线继续使用。
+        if not self._remote_theme_sync_lock.acquire(blocking=False):
+            return {"success": False, "added": 0, "updated": 0, "message": "远程主题正在同步中"}
+
+        try:
+            list_result = self.get_remote_theme_list()
+            if not list_result.get("success"):
+                return {
+                    "success": False,
+                    "added": 0,
+                    "updated": 0,
+                    "message": list_result.get("message") or "远程主题列表读取失败",
+                }
+
+            server_themes = list_result.get("themes", [])
+            current_cache = self._cfg_mgr.get_remote_themes_cache()
+            next_cache = copy.deepcopy(current_cache)
+            added = 0
+            updated = 0
+            server_filenames = set()
+
+            for meta in server_themes:
+                filename = meta["filename"]
+                server_filenames.add(filename)
+                theme_path = _get_remote_theme_path(filename)
+                cached = current_cache.get(filename, {}) if isinstance(current_cache, dict) else {}
+                local_exists = bool(theme_path and theme_path.exists())
+                checksum_changed = str(cached.get("checksum") or "") != str(meta.get("checksum") or "")
+                if not local_exists or checksum_changed:
+                    download_result = self.download_remote_theme(filename)
+                    if not download_result.get("success"):
+                        return {
+                            "success": False,
+                            "added": added,
+                            "updated": updated,
+                            "message": download_result.get("message") or f"{filename} 下载失败",
+                        }
+                    if local_exists:
+                        updated += 1
+                    else:
+                        added += 1
+                next_cache[filename] = meta
+
+            for filename, meta in list(current_cache.items()):
+                if filename in server_filenames or not _is_remote_theme_filename(filename):
+                    continue
+                if isinstance(meta, dict):
+                    retired = copy.deepcopy(meta)
+                    retired["status"] = "inactive"
+                    next_cache[filename] = retired
+
+            self._cfg_mgr.set_remote_themes_cache(next_cache)
+            if added or updated:
+                message = f"远程主题同步完成：新增 {added} 个，更新 {updated} 个"
+            else:
+                message = "远程主题已是最新"
+            return {"success": True, "added": added, "updated": updated, "message": message}
+        finally:
+            self._remote_theme_sync_lock.release()
+
     def get_theme_list(self):
         # 扫描 web/themes 目录下的主题 JSON 文件列表，并返回主题元信息供前端下拉框展示。
         themes_dir = WEB_DIR / "themes"
-        if not themes_dir.exists():
-            return []
 
         theme_list = []
-        for file in themes_dir.glob("*.json"):
+        if themes_dir.exists():
+            for file in themes_dir.glob("*.json"):
+                try:
+                    data = self._load_json_with_fallback(file)
+                    if isinstance(data, dict):
+                        meta = data.get("meta", {})
+                        sort_order = meta.get("sort_order", 100)
+                        try:
+                            sort_order = int(sort_order)
+                        except (TypeError, ValueError):
+                            sort_order = 100
+                        theme_list.append(
+                            {
+                                "filename": file.name,
+                                "name": meta.get("name", file.stem),
+                                "author": meta.get("author", ""),
+                                "version": meta.get("version", ""),
+                                "sort_order": sort_order,
+                                "source": "builtin",
+                            }
+                        )
+                except Exception as e:
+                    log.error(f"读取主题 {file.name} 失败: {e}")
+
+        active_theme = self._cfg_mgr.get_active_theme()
+        remote_cache = self._cfg_mgr.get_remote_themes_cache()
+        for filename, meta in remote_cache.items():
+            if not _is_remote_theme_filename(filename) or not isinstance(meta, dict):
+                continue
+            theme_path = _get_remote_theme_path(filename)
+            if not theme_path or not theme_path.exists():
+                continue
+            status = str(meta.get("status") or "active")
+            if status != "active" and filename != active_theme:
+                continue
             try:
-                data = self._load_json_with_fallback(file)
-                if isinstance(data, dict):
-                    meta = data.get("meta", {})
-                    sort_order = meta.get("sort_order", 100)
-                    try:
-                        sort_order = int(sort_order)
-                    except (TypeError, ValueError):
-                        sort_order = 100
-                    theme_list.append(
-                        {
-                            "filename": file.name,
-                            "name": meta.get("name", file.stem),
-                            "author": meta.get("author", ""),
-                            "version": meta.get("version", ""),
-                            "sort_order": sort_order,
-                        }
-                    )
-            except Exception as e:
-                log.error(f"读取主题 {file.name} 失败: {e}")
+                sort_order = int(meta.get("sort_order") or 100)
+            except (TypeError, ValueError):
+                sort_order = 100
+            theme_list.append(
+                {
+                    "filename": filename,
+                    "name": meta.get("name") or filename,
+                    "author": meta.get("author", ""),
+                    "version": meta.get("version", ""),
+                    "sort_order": sort_order,
+                    "source": "remote",
+                    "status": status,
+                    "visibility": meta.get("visibility", "public"),
+                    "checksum": meta.get("checksum", ""),
+                }
+            )
 
         theme_list.sort(key=lambda item: item.get("sort_order", 100))
         return self._theme_unlock.filter_theme_list(theme_list)
 
     def load_theme_content(self, filename):
         # 读取指定主题文件的完整 JSON 内容并返回给前端应用。
+        filename = str(filename or "").strip()
         if not self._theme_unlock.is_theme_accessible(filename):
             return None
+        if _is_remote_theme_filename(filename):
+            theme_path = _get_remote_theme_path(filename)
+            if not theme_path or not theme_path.exists():
+                return None
+            try:
+                data = self._load_json_with_fallback(theme_path)
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                log.error(f"加载远程主题失败: {e}")
+            return None
+
         themes_dir = (WEB_DIR / "themes").resolve()
         theme_path = (themes_dir / str(filename)).resolve()
         if os.path.commonpath([str(theme_path), str(themes_dir)]) != str(themes_dir):

@@ -18,6 +18,7 @@ const redeemModule = {
     _categoryNotes: {},
     _presetGroups: [],
     _presetGroupCollapsed: {},
+    _themeOptions: [],
 
     // 默认分组定义（type → group 映射）
     _defaultPresetGroups: [
@@ -75,6 +76,8 @@ const redeemModule = {
         'beiku.json': 'beiku 主题',
         'lianying.json': '爱樱主题',
         'chifeng.json': '赤峰主题',
+        'wuye_fuyin.json': '午夜福音的主题',
+        'zqrx_mifuyu.json': 'zqrx-mifuyu',
     },
 
     // 标签内部名 → 中文显示名
@@ -93,6 +96,83 @@ const redeemModule = {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    },
+
+    _getFallbackThemeOptions() {
+        return Object.entries(this._themeDisplayNames).map(([filename, name], index) => ({
+            source: 'local',
+            filename,
+            name,
+            visibility: 'local',
+            status: 'active',
+            sort_order: index,
+        }));
+    },
+
+    async _loadThemeOptions() {
+        try {
+            const res = await fetch(`${app.config.apiBase}/admin/redeem/themes`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || '主题列表读取失败');
+            const themes = Array.isArray(data.themes) ? data.themes : [];
+            this._themeOptions = themes
+                .filter(item => item && item.filename)
+                .map(item => ({
+                    source: item.source || 'remote',
+                    filename: String(item.filename || ''),
+                    name: item.name || item.filename,
+                    author: item.author || '',
+                    version: item.version || '',
+                    visibility: item.visibility || 'public',
+                    status: item.status || 'active',
+                    sort_order: Number(item.sort_order || 100),
+                }));
+            this._themeOptions.forEach(item => {
+                this._themeDisplayNames[item.filename] = item.name || item.filename;
+            });
+        } catch {
+            if (!this._themeOptions.length) this._themeOptions = this._getFallbackThemeOptions();
+        }
+        this._populateThemeSelect('redeemPayloadTheme', document.getElementById('redeemPayloadTheme')?.value || '');
+    },
+
+    _buildThemeOptionsHtml(selectedValue = '') {
+        const selected = String(selectedValue || '');
+        const themes = this._themeOptions.length ? this._themeOptions : this._getFallbackThemeOptions();
+        const localThemes = themes.filter(item => item.source === 'local');
+        const remoteThemes = themes.filter(item => item.source === 'remote');
+        const buildOptions = (items) => items.map(item => {
+            const labelParts = [item.name || item.filename];
+            if (item.source === 'remote' && item.visibility === 'restricted') labelParts.push('兑换码专属');
+            if (item.status !== 'active') labelParts.push('下架');
+            const isSelected = item.filename === selected;
+            const disabled = item.status !== 'active' && !isSelected ? ' disabled' : '';
+            return `<option value="${this._escapeHtml(item.filename)}"${isSelected ? ' selected' : ''}${disabled}>${this._escapeHtml(labelParts.join(' · '))}</option>`;
+        }).join('');
+
+        let html = '<option value="">不解锁主题</option>';
+        if (localThemes.length) {
+            html += `<optgroup label="内置主题">${buildOptions(localThemes)}</optgroup>`;
+        }
+        if (remoteThemes.length) {
+            html += `<optgroup label="服务器主题">${buildOptions(remoteThemes)}</optgroup>`;
+        }
+        if (selected && !themes.some(item => item.filename === selected)) {
+            html += `<option value="${this._escapeHtml(selected)}" selected>保留当前值 (${this._escapeHtml(selected)})</option>`;
+        }
+        return html;
+    },
+
+    _populateThemeSelect(selectId, selectedValue = '') {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        const selected = String(selectedValue || '');
+        select.innerHTML = this._buildThemeOptionsHtml(selected);
+        select.value = selected;
+    },
+
+    _setThemeSelectValue(value, selectId = 'redeemPayloadTheme') {
+        this._populateThemeSelect(selectId, value || '');
     },
 
     _getPopupStyleOptions(selectedValue = 'default') {
@@ -197,6 +277,7 @@ const redeemModule = {
     // ═══════════════════════════════════════════════════════
 
     async initGenerate() {
+        await this._loadThemeOptions();
         await this._loadPresets();
         await this._loadTagOptions();
         this._renderPresetGrid();
@@ -399,7 +480,7 @@ const redeemModule = {
 
         if (savedDefaults) {
             // 使用保存的默认值
-            document.getElementById('redeemPayloadTheme').value = savedDefaults.theme || '';
+            this._setThemeSelectValue(savedDefaults.theme || '');
             document.getElementById('redeemPayloadBonus').value = savedDefaults.bonus || 0;
             document.getElementById('redeemPayloadDailyBonus').value = savedDefaults.daily_limit_bonus || 0;
             document.getElementById('redeemPayloadTag').value = savedDefaults.tag || '';
@@ -429,7 +510,7 @@ const redeemModule = {
             if (preset) {
                 try {
                     const p = JSON.parse(preset.payload);
-                    document.getElementById('redeemPayloadTheme').value = p.theme || '';
+                    this._setThemeSelectValue(p.theme || '');
                     document.getElementById('redeemPayloadBonus').value = p.bonus || 0;
                     document.getElementById('redeemPayloadDailyBonus').value = p.daily_limit_bonus || 0;
                     document.getElementById('redeemPayloadTag').value = p.tag || '';
@@ -449,7 +530,7 @@ const redeemModule = {
             const logoSelect = document.getElementById('redeemPopupLogo');
             if (logoSelect) logoSelect.value = 'default';
         } else {
-            document.getElementById('redeemPayloadTheme').value = '';
+            this._setThemeSelectValue('');
             document.getElementById('redeemPayloadBonus').value = 0;
             document.getElementById('redeemPayloadDailyBonus').value = 0;
             document.getElementById('redeemPayloadTag').value = '';
@@ -594,7 +675,7 @@ const redeemModule = {
         this._selectedPreset = null;
         document.querySelectorAll('.redeem-preset-card').forEach(c => c.classList.remove('selected'));
         document.getElementById('redeemGenPanel').style.display = 'none';
-        document.getElementById('redeemPayloadTheme').value = '';
+        this._setThemeSelectValue('');
         document.getElementById('redeemPayloadBonus').value = 0;
         document.getElementById('redeemPayloadDailyBonus').value = 0;
         // 清空文案输入
@@ -707,15 +788,15 @@ const redeemModule = {
                 })
             });
 
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
-                const data = await res.json();
                 const codes = data.codes || [];
                 app.showAlert(`已生成 ${codes.length} 个兑换码`, 'success');
                 this._showGeneratedCodes(codes);
             } else {
-                throw new Error();
+                throw new Error(data.error || '生成失败');
             }
-        } catch { app.showAlert('生成失败', 'danger'); }
+        } catch (e) { app.showAlert(e.message || '生成失败', 'danger'); }
     },
 
     /** 展示已生成的兑换码列表 */
@@ -759,6 +840,7 @@ const redeemModule = {
         this._statsTab = 'codes';
         this._searchKeyword = '';
         this._selectedCodeIds.clear();
+        await this._loadThemeOptions();
         await this._loadPresets();
         await this._loadAllCodes();
         this._loadCategoryNotes();
@@ -1111,6 +1193,7 @@ const redeemModule = {
         }
         this._editingCodeId = codeId;
         try {
+            await this._loadThemeOptions();
             await this._loadPresets();
             await this._loadAllCodes();
             const code = this._allCodes.find(c => c.id === codeId);
@@ -1142,7 +1225,7 @@ const redeemModule = {
         const safePopupMessage = this._escapeHtml(code.popup_message || '');
         const safePopupSubtitle = this._escapeHtml(code.popup_subtitle || '');
         const safeTag = this._escapeHtml(this._parseField(code.payload, 'tag'));
-        const safeTheme = this._escapeHtml(this._parseField(code.payload, 'theme'));
+        const selectedTheme = this._parseField(code.payload, 'theme');
 
         const rewards = this.parsePayloadRewards(code.payload, false);
         const usedPercent = code.max_uses > 0 ? Math.min(100, Math.round((code.used_count / code.max_uses) * 100)) : 0;
@@ -1278,7 +1361,9 @@ const redeemModule = {
                         <div class="rd-form-group">
                             <div class="rd-form-row">
                                 <label class="rd-form-label">主题</label>
-                                <input type="text" class="input rd-input" id="detailPayloadTheme" value="${safeTheme}" placeholder="如 supporter.json">
+                                <select class="select rd-input" id="detailPayloadTheme">
+                                    ${this._buildThemeOptionsHtml(selectedTheme)}
+                                </select>
                             </div>
                             <div class="rd-form-row-inline">
                                 <div class="rd-form-row" style="flex:1;">
@@ -2065,4 +2150,3 @@ const redeemModule = {
         }
     },
 };
-

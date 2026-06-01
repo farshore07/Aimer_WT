@@ -1124,6 +1124,42 @@ i[class^="ri-"] {
     letter-spacing: 0.2px;
 }
 
+.theme-sync-btn {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-sec);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.theme-sync-btn:hover {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--bg-body);
+}
+
+.theme-sync-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
+.theme-sync-btn.loading i {
+    animation: remote-theme-spin 0.9s linear infinite;
+}
+
+@keyframes remote-theme-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 [data-theme="dark"] .card {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
     border-color: rgba(255, 255, 255, 0.08);
@@ -4074,6 +4110,26 @@ i[class^="ri-"] {
     cursor: pointer;
     transition: all 0.15s ease;
     border-left: 3px solid transparent;
+}
+
+.custom-select-section {
+    padding: 8px 12px 6px;
+    font-size: 11px;
+    color: var(--text-sec);
+    background: var(--bg-body);
+    border-top: 1px solid var(--border-color);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    pointer-events: none;
+}
+
+.remote-theme-option::after {
+    content: "REMOTE";
+    float: right;
+    margin-left: 8px;
+    font-size: 10px;
+    color: var(--text-sec);
+    opacity: 0.7;
 }
 
 .custom-select-option:hover {

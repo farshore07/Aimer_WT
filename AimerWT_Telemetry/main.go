@@ -89,6 +89,7 @@ func initDB() {
 	}
 	if err := db.AutoMigrate(&TelemetryRecord{}, &ContentConfig{}, &NoticeItem{}, &FeedbackRecord{},
 		&ClientDeviceToken{}, &MachineIDAlias{}, &AIUsageRecord{}, &AIUserBan{}, &AIUserLimit{}, &UserTag{}, &AdClickEvent{},
+		&RemoteTheme{},
 		&RedeemCode{}, &RedeemRecord{}, &NoticeReaction{},
 		&NoticeComment{}, &NoticeCommentLike{}, &NoticeCommentBan{}, &CommentReport{},
 		&UserProfile{}, &NicknameRequest{}, &AvatarRequest{}, &AuditLog{},

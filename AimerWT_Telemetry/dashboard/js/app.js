@@ -403,6 +403,9 @@ const app = {
             case 'knowledge_ads':
                 this.loadKnowledgeAds();
                 break;
+            case 'remote_themes':
+                this.initRemoteThemes();
+                break;
             default:
                 break;
         }
@@ -9652,6 +9655,229 @@ Object.assign(app, {
         } catch (e) {
             if (statusEl) statusEl.innerHTML = '❌ 校验失败';
             this.showAlert('哈希链校验请求失败: ' + e.message, 'danger');
+        }
+    },
+
+    initRemoteThemes() {
+        this._remoteThemeState = { themes: [] };
+        this.resetRemoteThemeForm();
+        this.loadRemoteThemes();
+    },
+
+    async loadRemoteThemes() {
+        const listEl = document.getElementById('remoteThemeList');
+        if (listEl) {
+            listEl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted);">加载中...</div>';
+        }
+        try {
+            const resp = await fetch('/admin/remote-themes');
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || '远程主题列表读取失败');
+            this._remoteThemeState = { themes: Array.isArray(data.themes) ? data.themes : [] };
+            this.renderRemoteThemes();
+        } catch (e) {
+            if (listEl) {
+                listEl.innerHTML = `<div style="padding:40px;text-align:center;color:var(--danger);">${this._escapeHtml(e.message)}</div>`;
+            }
+            this.showAlert('远程主题列表读取失败: ' + e.message, 'danger');
+        }
+    },
+
+    renderRemoteThemes() {
+        const listEl = document.getElementById('remoteThemeList');
+        const countEl = document.getElementById('remoteThemeCount');
+        if (!listEl) return;
+
+        const themes = this._remoteThemeState?.themes || [];
+        if (countEl) countEl.textContent = `${themes.length} 个主题`;
+        if (!themes.length) {
+            listEl.innerHTML = '<div style="padding:50px;text-align:center;color:var(--text-muted);">暂无远程主题</div>';
+            return;
+        }
+
+        listEl.innerHTML = themes.map(theme => {
+            const statusColor = theme.status === 'active' ? 'var(--secondary)' : 'var(--warning)';
+            const statusText = theme.status === 'active' ? '启用' : '下架';
+            const visibilityText = theme.visibility === 'restricted' ? '兑换码专属' : '公开';
+            return `<div style="padding:16px 18px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;">
+                <div style="min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <strong style="font-size:14px;color:var(--text);">${this._escapeHtml(theme.name || theme.filename)}</strong>
+                        <span style="font-size:11px;color:${statusColor};background:color-mix(in srgb, ${statusColor} 12%, transparent);padding:2px 8px;border-radius:999px;">${statusText}</span>
+                        <span style="font-size:11px;color:var(--text-muted);background:var(--bg);padding:2px 8px;border-radius:999px;">${visibilityText}</span>
+                    </div>
+                    <div style="margin-top:6px;color:var(--text-muted);font-size:12px;display:flex;gap:12px;flex-wrap:wrap;">
+                        <span>${this._escapeHtml(theme.filename)}</span>
+                        <span>v${this._escapeHtml(theme.version || '-')}</span>
+                        <span>${this._escapeHtml(theme.author || '-')}</span>
+                        <span>${Number(theme.file_size || 0)} B</span>
+                    </div>
+                    <div style="margin-top:5px;color:var(--text-muted);font-size:11px;word-break:break-all;">${this._escapeHtml(theme.checksum || '')}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button class="btn" onclick="app.editRemoteTheme(${Number(theme.id)})">编辑</button>
+                    <button class="btn" onclick="app.toggleRemoteTheme(${Number(theme.id)})">${theme.status === 'active' ? '下架' : '启用'}</button>
+                    <button class="btn danger" onclick="app.deleteRemoteTheme(${Number(theme.id)})">删除</button>
+                </div>
+            </div>`;
+        }).join('');
+    },
+
+    resetRemoteThemeForm() {
+        const values = {
+            remoteThemeId: '',
+            remoteThemeFilename: '',
+            remoteThemeName: '',
+            remoteThemeAuthor: 'Aimer',
+            remoteThemeVersion: '1.0.0',
+            remoteThemeSortOrder: '100',
+            remoteThemeVisibility: 'public',
+            remoteThemeStatus: 'active',
+            remoteThemeDescription: '',
+            remoteThemeData: `{
+  "meta": {
+    "name": "Example",
+    "author": "Aimer",
+    "version": "1.0.0",
+    "sort_order": 100
+  },
+  "colors": {
+    "--bg-primary": "#ffffff"
+  }
+}`
+        };
+        Object.entries(values).forEach(([id, value]) => {
+            const el = document.getElementById(id);
+            if (el) el.value = value;
+        });
+        const titleEl = document.getElementById('remoteThemeFormTitle');
+        if (titleEl) titleEl.textContent = '新建远程主题';
+    },
+
+    editRemoteTheme(id) {
+        const theme = (this._remoteThemeState?.themes || []).find(item => Number(item.id) === Number(id));
+        if (!theme) return;
+        const values = {
+            remoteThemeId: theme.id || '',
+            remoteThemeFilename: theme.filename || '',
+            remoteThemeName: theme.name || '',
+            remoteThemeAuthor: theme.author || '',
+            remoteThemeVersion: theme.version || '',
+            remoteThemeSortOrder: theme.sort_order || 100,
+            remoteThemeVisibility: theme.visibility || 'public',
+            remoteThemeStatus: theme.status || 'active',
+            remoteThemeDescription: theme.description || '',
+            remoteThemeData: this._formatRemoteThemeData(theme.theme_data)
+        };
+        Object.entries(values).forEach(([fieldId, value]) => {
+            const el = document.getElementById(fieldId);
+            if (el) el.value = value;
+        });
+        const titleEl = document.getElementById('remoteThemeFormTitle');
+        if (titleEl) titleEl.textContent = `编辑 ${theme.filename}`;
+    },
+
+    _formatRemoteThemeData(themeData) {
+        if (!themeData) return '';
+        if (typeof themeData === 'string') {
+            try {
+                return JSON.stringify(JSON.parse(themeData), null, 2);
+            } catch {
+                return themeData;
+            }
+        }
+        try {
+            return JSON.stringify(themeData, null, 2);
+        } catch {
+            return '';
+        }
+    },
+
+    _readRemoteThemeForm() {
+        const value = (id) => document.getElementById(id)?.value?.trim() || '';
+        return {
+            id: value('remoteThemeId'),
+            filename: value('remoteThemeFilename'),
+            name: value('remoteThemeName'),
+            author: value('remoteThemeAuthor'),
+            version: value('remoteThemeVersion'),
+            sort_order: parseInt(value('remoteThemeSortOrder') || '100', 10),
+            visibility: value('remoteThemeVisibility') || 'public',
+            status: value('remoteThemeStatus') || 'active',
+            description: value('remoteThemeDescription'),
+            theme_data: value('remoteThemeData')
+        };
+    },
+
+    async saveRemoteTheme() {
+        const payload = this._readRemoteThemeForm();
+        if (!payload.filename || !payload.version || !payload.theme_data) {
+            this.showAlert('文件名、版本和主题 JSON 为必填', 'warning');
+            return;
+        }
+
+        const isEdit = Boolean(payload.id);
+        const id = payload.id;
+        delete payload.id;
+        try {
+            const resp = await fetch(isEdit ? `/admin/remote-themes/${id}` : '/admin/remote-themes', {
+                method: isEdit ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || '保存失败');
+            this.showAlert(isEdit ? '主题已更新' : '主题已创建', 'success');
+            await this.loadRemoteThemes();
+            if (!isEdit) this.resetRemoteThemeForm();
+        } catch (e) {
+            this.showAlert('保存失败: ' + e.message, 'danger');
+        }
+    },
+
+    async importRemoteThemeFiles() {
+        try {
+            const resp = await fetch('/admin/remote-themes/import', { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || '扫描导入失败');
+            const result = data.result || {};
+            const imported = Number(result.imported || 0);
+            const updated = Number(result.updated || 0);
+            const skipped = Number(result.skipped || 0);
+            const message = `扫描完成：新增 ${imported} 个，更新 ${updated} 个，跳过 ${skipped} 个`;
+            if (Array.isArray(result.errors) && result.errors.length) {
+                this.showAlert(`${message}；${result.errors[0]}`, 'warning');
+            } else {
+                this.showAlert(message, 'success');
+            }
+            await this.loadRemoteThemes();
+        } catch (e) {
+            this.showAlert('扫描导入失败: ' + e.message, 'danger');
+        }
+    },
+
+    async toggleRemoteTheme(id) {
+        try {
+            const resp = await fetch(`/admin/remote-themes/${id}/toggle`, { method: 'POST' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || '状态切换失败');
+            this.showAlert('主题状态已更新', 'success');
+            await this.loadRemoteThemes();
+        } catch (e) {
+            this.showAlert('状态切换失败: ' + e.message, 'danger');
+        }
+    },
+
+    async deleteRemoteTheme(id) {
+        if (!confirm('确认删除这个远程主题？')) return;
+        try {
+            const resp = await fetch(`/admin/remote-themes/${id}`, { method: 'DELETE' });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || '删除失败');
+            this.showAlert('主题已删除', 'success');
+            await this.loadRemoteThemes();
+        } catch (e) {
+            this.showAlert('删除失败: ' + e.message, 'danger');
         }
     },
 

@@ -10,6 +10,8 @@
 import json
 import os
 import platform
+import copy
+import re
 from pathlib import Path
 import sys
 from utils.logger import get_logger
@@ -40,6 +42,7 @@ def _get_config_dir():
 
 DOCS_DIR = _get_config_dir()
 CONFIG_FILE = DOCS_DIR / "settings.json"
+REMOTE_THEME_FILENAME_RE = re.compile(r"^remote_[a-z0-9_]+\.json$")
 
 
 class ConfigManager:
@@ -74,7 +77,8 @@ class ConfigManager:
         "autostart_enabled": False,
         "tray_mode": False,
         "close_confirm": True,
-        "ui_language": ""
+        "ui_language": "",
+        "remote_themes_cache": {}
     }
 
     def __init__(self):
@@ -82,7 +86,7 @@ class ConfigManager:
         self.config_dir = DOCS_DIR
         self.config_file = CONFIG_FILE
         # 初始化默认配置并尝试从 settings.json 加载覆盖
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.config = copy.deepcopy(self.DEFAULT_CONFIG)
         self.load_config()
 
     def _load_json_with_fallback(self, file_path: Path) -> dict | None:
@@ -402,6 +406,45 @@ class ConfigManager:
             seen.add(name)
             cleaned.append(name)
         self.config["unlocked_themes"] = cleaned
+        return self.save_config()
+
+    def get_remote_themes_cache(self) -> dict:
+        """读取远程主题元数据缓存。"""
+        raw = self.config.get("remote_themes_cache", {})
+        if not isinstance(raw, dict):
+            return {}
+        return copy.deepcopy(raw)
+
+    def set_remote_themes_cache(self, themes_cache: dict) -> bool:
+        """更新远程主题元数据缓存并写入 settings.json。"""
+        cleaned = {}
+        if isinstance(themes_cache, dict):
+            for filename, meta in themes_cache.items():
+                name = str(filename or "").strip()
+                if not REMOTE_THEME_FILENAME_RE.match(name) or not isinstance(meta, dict):
+                    continue
+                try:
+                    sort_order = int(meta.get("sort_order") or 100)
+                except (TypeError, ValueError):
+                    sort_order = 100
+                try:
+                    file_size = int(meta.get("file_size") or 0)
+                except (TypeError, ValueError):
+                    file_size = 0
+                cleaned[name] = {
+                    "filename": name,
+                    "name": str(meta.get("name") or name),
+                    "author": str(meta.get("author") or ""),
+                    "version": str(meta.get("version") or ""),
+                    "visibility": str(meta.get("visibility") or "public"),
+                    "status": str(meta.get("status") or "active"),
+                    "sort_order": sort_order,
+                    "checksum": str(meta.get("checksum") or ""),
+                    "file_size": file_size,
+                    "description": str(meta.get("description") or ""),
+                    "updated_at": str(meta.get("updated_at") or ""),
+                }
+        self.config["remote_themes_cache"] = cleaned
         return self.save_config()
 
     def get_config_file_path(self) -> str:

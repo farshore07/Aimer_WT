@@ -80,7 +80,42 @@ var redeemPresets = []map[string]interface{}{
 
 var errRedeemRejected = errors.New("redeem rejected")
 
-func validateRedeemPayload(payload string) error {
+type redeemThemeOption struct {
+	Source      string `json:"source"`
+	Filename    string `json:"filename"`
+	Name        string `json:"name"`
+	Author      string `json:"author,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Visibility  string `json:"visibility"`
+	Status      string `json:"status"`
+	SortOrder   int    `json:"sort_order"`
+	Checksum    string `json:"checksum,omitempty"`
+	FileSize    int    `json:"file_size,omitempty"`
+	Description string `json:"description,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+var redeemLocalThemes = []redeemThemeOption{
+	{Source: "local", Filename: "supporter.json", Name: "支持者主题", Visibility: "local", Status: "active", SortOrder: 10},
+	{Source: "local", Filename: "bi_an.json", Name: "彼岸主题", Visibility: "local", Status: "active", SortOrder: 20},
+	{Source: "local", Filename: "beiku.json", Name: "beiku 主题", Visibility: "local", Status: "active", SortOrder: 30},
+	{Source: "local", Filename: "lianying.json", Name: "爱樱主题", Visibility: "local", Status: "active", SortOrder: 40},
+	{Source: "local", Filename: "chifeng.json", Name: "赤峰主题", Visibility: "local", Status: "active", SortOrder: 50},
+	{Source: "local", Filename: "wuye_fuyin.json", Name: "午夜福音的主题", Visibility: "local", Status: "active", SortOrder: 60},
+	{Source: "local", Filename: "zqrx_mifuyu.json", Name: "zqrx-mifuyu", Visibility: "local", Status: "active", SortOrder: 70},
+}
+
+func redeemLocalThemeName(filename string) (string, bool) {
+	filename = strings.TrimSpace(filename)
+	for _, item := range redeemLocalThemes {
+		if item.Filename == filename {
+			return item.Name, true
+		}
+	}
+	return "", false
+}
+
+func validateRedeemPayload(store *gorm.DB, payload string) error {
 	if strings.TrimSpace(payload) == "" {
 		return errors.New("payload 不能为空")
 	}
@@ -88,7 +123,98 @@ func validateRedeemPayload(payload string) error {
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("payload 不是合法 JSON: %w", err)
 	}
+	if rawTheme, ok := parsed["theme"]; ok {
+		themeFile, ok := rawTheme.(string)
+		if !ok {
+			return errors.New("theme 必须是字符串")
+		}
+		themeFile = strings.TrimSpace(themeFile)
+		if themeFile != "" {
+			if _, ok := redeemLocalThemeName(themeFile); !ok {
+				if !remoteThemeFilenameRe.MatchString(themeFile) {
+					return errors.New("theme 不在可兑换主题列表中")
+				}
+				var count int64
+				if err := store.Model(&RemoteTheme{}).
+					Where("filename = ? AND status = ?", themeFile, "active").
+					Count(&count).Error; err != nil {
+					return fmt.Errorf("主题查询失败: %w", err)
+				}
+				if count == 0 {
+					return errors.New("服务器主题不存在或未启用")
+				}
+			}
+		}
+	}
 	return nil
+}
+
+func buildRedeemThemeOptions(store *gorm.DB) ([]redeemThemeOption, error) {
+	options := make([]redeemThemeOption, 0, len(redeemLocalThemes))
+	options = append(options, redeemLocalThemes...)
+
+	var remoteThemes []RemoteTheme
+	if err := store.Order("sort_order asc, id asc").Find(&remoteThemes).Error; err != nil {
+		return nil, err
+	}
+	for _, theme := range remoteThemes {
+		fileSize := theme.FileSize
+		if fileSize <= 0 {
+			fileSize = len([]byte(theme.ThemeData))
+		}
+		options = append(options, redeemThemeOption{
+			Source:      "remote",
+			Filename:    theme.Filename,
+			Name:        theme.Name,
+			Author:      theme.Author,
+			Version:     theme.Version,
+			Visibility:  theme.Visibility,
+			Status:      theme.Status,
+			SortOrder:   theme.SortOrder,
+			Checksum:    theme.Checksum,
+			FileSize:    fileSize,
+			Description: theme.Description,
+			UpdatedAt:   theme.UpdatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	return options, nil
+}
+
+func loadRedeemRemoteTheme(store *gorm.DB, filename string) (*RemoteTheme, error) {
+	var theme RemoteTheme
+	if err := store.Where("filename = ? AND status = ?", filename, "active").First(&theme).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("服务器主题不存在或未启用")
+		}
+		return nil, err
+	}
+	return &theme, nil
+}
+
+func buildRedeemRemoteThemeBundle(theme RemoteTheme) (map[string]interface{}, error) {
+	var themeData map[string]interface{}
+	if err := json.Unmarshal([]byte(theme.ThemeData), &themeData); err != nil {
+		return nil, errors.New("服务器主题数据损坏")
+	}
+	fileSize := theme.FileSize
+	if fileSize <= 0 {
+		fileSize = len([]byte(theme.ThemeData))
+	}
+	return map[string]interface{}{
+		"filename":    theme.Filename,
+		"name":        theme.Name,
+		"author":      theme.Author,
+		"version":     theme.Version,
+		"visibility":  theme.Visibility,
+		"status":      theme.Status,
+		"sort_order":  theme.SortOrder,
+		"checksum":    theme.Checksum,
+		"file_size":   fileSize,
+		"description": theme.Description,
+		"updated_at":  theme.UpdatedAt.Format("2006-01-02 15:04:05"),
+		"theme_data":  themeData,
+		"theme_text":  theme.ThemeData,
+	}, nil
 }
 
 func getOrCreateAIUserLimit(store *gorm.DB, machineID string) (*AIUserLimit, error) {
@@ -120,6 +246,30 @@ func executeRedeemPayload(store *gorm.DB, machineID string, redeemCode *RedeemCo
 	// 处理主题解锁
 	themeFile, _ := payload["theme"].(string)
 	themeUnlocked := themeFile != ""
+	themeName := ""
+	var remoteThemeBundle map[string]interface{}
+	if themeUnlocked {
+		themeFile = strings.TrimSpace(themeFile)
+		if localName, ok := redeemLocalThemeName(themeFile); ok {
+			themeName = localName
+		} else if remoteThemeFilenameRe.MatchString(themeFile) {
+			remoteTheme, err := loadRedeemRemoteTheme(store, themeFile)
+			if err != nil {
+				return nil, err
+			}
+			bundle, err := buildRedeemRemoteThemeBundle(*remoteTheme)
+			if err != nil {
+				return nil, err
+			}
+			themeName = remoteTheme.Name
+			remoteThemeBundle = bundle
+		} else {
+			return nil, errors.New("主题不在可兑换主题列表中")
+		}
+		if themeName == "" {
+			themeName = themeFile
+		}
+	}
 
 	// 处理 AI 永久额度增加
 	if bonusVal, ok := payload["bonus"]; ok {
@@ -219,7 +369,7 @@ func executeRedeemPayload(store *gorm.DB, machineID string, redeemCode *RedeemCo
 	}
 
 	if themeUnlocked {
-		messages = append(messages, "解锁支持者专属主题")
+		messages = append(messages, fmt.Sprintf("解锁「%s」主题", themeName))
 	}
 
 	// 构建客户端指令（优先使用自定义弹窗设置）
@@ -248,6 +398,9 @@ func executeRedeemPayload(store *gorm.DB, machineID string, redeemCode *RedeemCo
 	}
 	if themeUnlocked {
 		cmd["theme_file"] = themeFile
+	}
+	if remoteThemeBundle != nil {
+		cmd["remote_theme"] = remoteThemeBundle
 	}
 
 	return cmd, nil
@@ -290,6 +443,16 @@ func initRedeemRoutes(admin *gin.RouterGroup) {
 			c.JSON(200, gin.H{"presets": redeemPresets})
 		})
 
+		// 获取可绑定到兑换码的主题列表
+		redeem.GET("/themes", func(c *gin.Context) {
+			themes, err := buildRedeemThemeOptions(db)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "主题列表读取失败"})
+				return
+			}
+			c.JSON(200, gin.H{"themes": themes})
+		})
+
 		// 生成兑换码（单个或批量）
 		redeem.POST("", func(c *gin.Context) {
 			var req struct {
@@ -323,7 +486,7 @@ func initRedeemRoutes(admin *gin.RouterGroup) {
 			if req.PopupStyle == "" {
 				req.PopupStyle = "default"
 			}
-			if err := validateRedeemPayload(req.Payload); err != nil {
+			if err := validateRedeemPayload(db, req.Payload); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
@@ -416,7 +579,7 @@ func initRedeemRoutes(admin *gin.RouterGroup) {
 				updates["max_uses"] = *req.MaxUses
 			}
 			if req.Payload != nil {
-				if err := validateRedeemPayload(*req.Payload); err != nil {
+				if err := validateRedeemPayload(db, *req.Payload); err != nil {
 					c.JSON(400, gin.H{"error": err.Error()})
 					return
 				}

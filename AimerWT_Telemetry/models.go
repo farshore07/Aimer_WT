@@ -125,6 +125,24 @@ type ContentConfig struct {
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
+// RemoteTheme 远程主题元数据与主题 JSON 内容。
+type RemoteTheme struct {
+	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Filename    string    `gorm:"uniqueIndex;type:varchar(128);not null" json:"filename"`
+	Name        string    `gorm:"type:varchar(128);not null" json:"name"`
+	Author      string    `gorm:"type:varchar(64)" json:"author"`
+	Version     string    `gorm:"type:varchar(32);not null" json:"version"`
+	Visibility  string    `gorm:"type:varchar(24);not null;default:'public';index" json:"visibility"`
+	Status      string    `gorm:"type:varchar(24);not null;default:'active';index" json:"status"`
+	SortOrder   int       `gorm:"default:0;index" json:"sort_order"`
+	Checksum    string    `gorm:"type:varchar(64);not null" json:"checksum"`
+	FileSize    int       `gorm:"default:0" json:"file_size"`
+	Description string    `gorm:"type:text" json:"description"`
+	ThemeData   string    `gorm:"type:text" json:"theme_data,omitempty"`
+	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
 // ClientDeviceToken 服务端签发给客户端的设备级访问令牌。
 // 用于避免把打包进客户端的共享密钥直接当作长期信任边界。
 type ClientDeviceToken struct {
