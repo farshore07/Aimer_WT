@@ -265,6 +265,7 @@ class TelemetryManager:
         self._msg_callback = None
         self._cmd_callback = None
         self._log_callback = None
+        self._content_cache_keys_callback = None
         self._user_seq_id = 0
         self.refresh_machine_id_candidates_async()
 
@@ -279,6 +280,10 @@ class TelemetryManager:
     def set_log_callback(self, callback):
         """设置日志回调 (msg: str, level: str) -> None"""
         self._log_callback = callback
+
+    def set_content_cache_keys_callback(self, callback):
+        """设置内容缓存键回调，用于心跳请求携带本地已缓存的公告/广告版本。"""
+        self._content_cache_keys_callback = callback
 
     def is_server_connected(self) -> bool:
         """返回最近一次遥测交互是否成功连接到服务端。"""
@@ -553,6 +558,17 @@ class TelemetryManager:
                     "locale": user_locale,
                     "session_id": os.getpid()
                 }
+                if self._content_cache_keys_callback:
+                    try:
+                        content_cache_keys = self._content_cache_keys_callback()
+                        if isinstance(content_cache_keys, dict) and content_cache_keys:
+                            payload["content_cache_keys"] = {
+                                str(k): str(v)
+                                for k, v in content_cache_keys.items()
+                                if k and v
+                            }
+                    except Exception:
+                        pass
 
                 headers = build_client_auth_headers(
                     self.report_url,
@@ -629,6 +645,9 @@ class TelemetryManager:
                                 knowledge_ads = data.get("knowledge_ads_items")
                                 if knowledge_ads is not None:
                                     sys_config["knowledge_ads_items"] = knowledge_ads
+                                content_cache_keys = data.get("content_cache_keys")
+                                if isinstance(content_cache_keys, dict):
+                                    sys_config["content_cache_keys"] = content_cache_keys
                                 self._msg_callback(sys_config)
 
                         user_cmd = data.get("user_command")

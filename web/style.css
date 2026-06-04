@@ -565,14 +565,43 @@ i[class^="ri-"] {
     /* 填满高度以方便拖拽 */
 }
 
-.app-logo {
-    width: 24px;
-    /* 稍微调小一点以适应新高度 */
-    height: 24px;
-    object-fit: contain;
-    border-radius: 6px;
-    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+.app-logo-wrapper {
+    position: relative;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
     -webkit-app-region: no-drag;
+}
+
+.app-logo {
+    width: 20px;
+    height: 20px;
+    display: block;
+    object-fit: contain;
+    border-radius: 4px;
+    -webkit-app-region: no-drag;
+    position: absolute;
+    top: 0;
+    left: 0;
+    transition: opacity 0.45s ease;
+}
+
+/* 亮色模式：显示 Light，隐藏 Dark */
+.app-logo-light {
+    opacity: 1;
+}
+
+.app-logo-dark {
+    opacity: 0;
+}
+
+/* 暗色模式：显示 Dark，隐藏 Light */
+[data-theme="dark"] .app-logo-light {
+    opacity: 0;
+}
+
+[data-theme="dark"] .app-logo-dark {
+    opacity: 1;
 }
 
 .app-brand-wrapper {

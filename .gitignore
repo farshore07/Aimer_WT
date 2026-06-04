@@ -84,6 +84,7 @@ services/theme_unlock/
 
 # Temp workdir
 _tmp/
+.codex_runtime/
 
 # Local redeem codes (do not upload)
 web/redeem/redeem_codes.local.js

@@ -61,6 +61,7 @@ from services.telemetry_manager import (
     submit_feedback,
 )
 from utils.utils import get_docs_data_dir
+from services.remote_asset_cache import RemoteAssetCache
 try:
     from services.theme_unlock import ThemeUnlockService
 except Exception:
@@ -566,9 +567,13 @@ class AppApi:
         self._last_notice_items_state = None  # 公告列表配置去重
         self._last_user_feature_state = None  # 用户功能开关去重
         self._last_system_notifications_state = None  # 系统通知列表去重
+        self._last_knowledge_ads_state = None  # 信息库广告配置去重
 
         # 服务器数据缓存文件路径
         self._server_cache_file = Path(self._cfg_mgr.config_dir) / "server_cache.json"
+
+        # 远程素材离线缓存（广告轮播图片、信息库广告素材）
+        self._asset_cache = RemoteAssetCache(get_docs_data_dir() / ".cache" / "remote_assets")
 
     def _get_sound_replace_backup_root(self) -> Path:
         # Sound 源文件替换备份挂在语音包库同级的 WT备份 目录下。
@@ -867,6 +872,59 @@ class AppApi:
         telemetry_manager.set_server_message_callback(self.on_server_message)
         telemetry_manager.set_user_command_callback(self.on_user_command)
         telemetry_manager.set_log_callback(self._logger)
+        if hasattr(telemetry_manager, "set_content_cache_keys_callback"):
+            telemetry_manager.set_content_cache_keys_callback(self._get_server_content_cache_keys)
+
+    def _get_server_content_cache_keys(self):
+        # 向遥测服务声明本地已完整缓存的公告/广告版本。
+        cache = self._load_server_cache()
+        keys = cache.get("content_cache_keys")
+        if not isinstance(keys, dict):
+            return {}
+
+        result = {}
+
+        def put_if_ready(name, ready):
+            value = str(keys.get(name) or "").strip()
+            if ready and value:
+                result[name] = value
+
+        put_if_ready("notice_items", isinstance(cache.get("notice_items"), list))
+        put_if_ready("ad_carousel", self._has_cached_ad_carousel_assets(cache.get("ad_carousel")))
+        put_if_ready("knowledge_ads", self._has_cached_knowledge_ads_assets(cache.get("knowledge_ads")))
+        return result
+
+    def _has_cached_ad_carousel_assets(self, ad_carousel):
+        if not isinstance(ad_carousel, dict):
+            return False
+        items = ad_carousel.get("items")
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            image = item.get("image")
+            if isinstance(image, str) and image.startswith(("http://", "https://")):
+                if not self._asset_cache.has_cached_image(image, "ad_carousel", item.get("id", "slide")):
+                    return False
+        return True
+
+    def _has_cached_knowledge_ads_assets(self, knowledge_ads):
+        if not isinstance(knowledge_ads, dict):
+            return False
+        items = knowledge_ads.get("items")
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id", "kb_ad")
+            for field in ("avatar", "background"):
+                value = item.get(field)
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    if not self._asset_cache.has_cached_image(value, "knowledge_ads", f"{item_id}_{field}"):
+                        return False
+        return True
 
     def _build_notice_items_apply_js(self, notice_items):
         items_json = json.dumps(notice_items, ensure_ascii=False)
@@ -1081,6 +1139,10 @@ class AppApi:
             return f"if(window.app && app.{func_name}) app.{func_name}({js_args})"
 
         try:
+            content_cache_keys = config.get("content_cache_keys")
+            if isinstance(content_cache_keys, dict):
+                self._save_server_cache(content_cache_keys=content_cache_keys)
+
             # 0. 用户功能开关（优先注入，让设置页和公告弹窗及时响应）
             feature_flags = self._extract_user_feature_flags(config)
             feature_state = json.dumps(feature_flags, ensure_ascii=False, sort_keys=True)
@@ -1150,42 +1212,69 @@ class AppApi:
                     )
                     self._last_update_content = update_key
 
-            # 5. 广告轮播远程覆盖
+            # 5. 广告轮播远程覆盖（下载图片到本地缓存，注入 Data URI 到前端）
             ad_items = config.get("ad_carousel_items")
             ad_interval_ms = config.get("ad_carousel_interval_ms")
             if isinstance(ad_items, list):
+                import copy as _copy
+                _ad_items_for_cache = _copy.deepcopy(ad_items)  # 保留原始 URL 用于持久化
+                for _ad in ad_items:
+                    if isinstance(_ad, dict) and isinstance(_ad.get("image"), str):
+                        _data_uri = self._asset_cache.cache_image(
+                            _ad["image"], "ad_carousel", _ad.get("id", "slide")
+                        )
+                        if _data_uri:
+                            _ad["image"] = _data_uri
                 ad_state = json.dumps({
-                    "items": ad_items,
+                    "items": _ad_items_for_cache,
                     "interval_ms": ad_interval_ms,
                 }, ensure_ascii=False, sort_keys=True)
                 if force or self._last_ad_carousel_state != ad_state:
                     self._window.evaluate_js(self._build_ad_carousel_apply_js(ad_items, ad_interval_ms))
                     self._last_ad_carousel_state = ad_state
-                    self._save_server_cache(ad_carousel={"items": ad_items, "interval_ms": ad_interval_ms})
+                    self._save_server_cache(ad_carousel={"items": _ad_items_for_cache, "interval_ms": ad_interval_ms})
 
-            # 5.5 信息库广告位远程覆盖
+            # 5.5 信息库广告位远程覆盖（下载图片到本地缓存，注入 Data URI 到前端）
             kb_ads = config.get("knowledge_ads_items")
             if isinstance(kb_ads, dict) and isinstance(kb_ads.get("items"), list):
-                kb_json = json.dumps(kb_ads, ensure_ascii=False)
-                self._window.evaluate_js(
-                    "(function(){"
-                    f"var cfg={kb_json};"
-                    "function apply(){"
-                    "if(!window.AIMER_KNOWLEDGE_ADS_CONFIG) return false;"
-                    "window.AIMER_KNOWLEDGE_ADS_CONFIG.items = cfg.items || [];"
-                    "if(window.KnowledgeAdsModule && typeof window.KnowledgeAdsModule.refresh === 'function') {"
-                    "window.KnowledgeAdsModule.refresh();"
-                    "}"
-                    "return true;"
-                    "}"
-                    "if(apply()) return;"
-                    "var attempts = 0;"
-                    "var timer = window.setInterval(function(){"
-                    "attempts += 1;"
-                    "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
-                    "}, 300);"
-                    "})();"
-                )
+                import copy as _copy
+                _kb_ads_for_cache = _copy.deepcopy(kb_ads)  # 保留原始 URL 用于持久化
+                for _kb_item in kb_ads["items"]:
+                    if not isinstance(_kb_item, dict):
+                        continue
+                    _kb_id = _kb_item.get("id", "kb_ad")
+                    for _field in ("avatar", "background"):
+                        _url = _kb_item.get(_field)
+                        if isinstance(_url, str) and _url:
+                            _data_uri = self._asset_cache.cache_image(
+                                _url, "knowledge_ads", f"{_kb_id}_{_field}"
+                            )
+                            if _data_uri:
+                                _kb_item[_field] = _data_uri
+                kb_state = json.dumps(_kb_ads_for_cache, ensure_ascii=False, sort_keys=True)
+                if force or self._last_knowledge_ads_state != kb_state:
+                    kb_json = json.dumps(kb_ads, ensure_ascii=False)
+                    self._window.evaluate_js(
+                        "(function(){"
+                        f"var cfg={kb_json};"
+                        "function apply(){"
+                        "if(!window.AIMER_KNOWLEDGE_ADS_CONFIG) return false;"
+                        "window.AIMER_KNOWLEDGE_ADS_CONFIG.items = cfg.items || [];"
+                        "if(window.KnowledgeAdsModule && typeof window.KnowledgeAdsModule.refresh === 'function') {"
+                        "window.KnowledgeAdsModule.refresh();"
+                        "}"
+                        "return true;"
+                        "}"
+                        "if(apply()) return;"
+                        "var attempts = 0;"
+                        "var timer = window.setInterval(function(){"
+                        "attempts += 1;"
+                        "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+                        "}, 300);"
+                        "})();"
+                    )
+                    self._last_knowledge_ads_state = kb_state
+                    self._save_server_cache(knowledge_ads=_kb_ads_for_cache)
 
             # 6. 公告列表远程覆盖
             notice_items = config.get("notice_items")
@@ -1333,18 +1422,43 @@ class AppApi:
         # 重放最近一次服务器配置，覆盖窗口和首页脚本尚未就绪的时机差。
         self._schedule_server_config_replay()
 
-    def _save_server_cache(self, notice_items=None, ad_carousel=None, banner_payload=None):
+    def _save_server_cache(
+            self,
+            notice_items=None,
+            ad_carousel=None,
+            banner_payload=None,
+            knowledge_ads=None,
+            content_cache_keys=None):
         """将服务器下发的公告/广告数据持久化到本地缓存文件（开发模式跳过）"""
         if getattr(self, '_is_dev_mode', False):
             return
         try:
             cache = self._load_server_cache()
+            changed = False
+
+            def set_if_changed(key, value):
+                nonlocal changed
+                if cache.get(key) != value:
+                    cache[key] = value
+                    changed = True
+
             if notice_items is not None:
-                cache["notice_items"] = notice_items
+                set_if_changed("notice_items", notice_items)
             if ad_carousel is not None:
-                cache["ad_carousel"] = ad_carousel
+                set_if_changed("ad_carousel", ad_carousel)
             if banner_payload is not None:
-                cache["banner_payload"] = banner_payload
+                set_if_changed("banner_payload", banner_payload)
+            if knowledge_ads is not None:
+                set_if_changed("knowledge_ads", knowledge_ads)
+            if content_cache_keys is not None:
+                safe_keys = {
+                    str(k): str(v)
+                    for k, v in content_cache_keys.items()
+                    if k and v
+                } if isinstance(content_cache_keys, dict) else {}
+                set_if_changed("content_cache_keys", safe_keys)
+            if not changed:
+                return
             cache_file = self._server_cache_file
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = cache_file.with_suffix('.tmp')
@@ -1387,12 +1501,19 @@ class AppApi:
                     self._window.evaluate_js(self._build_notice_items_apply_js(cached_notices))
                     log.debug(f"[缓存] 已注入 {len(cached_notices)} 条缓存公告")
 
-                # 注入缓存的广告轮播数据
+                # 注入缓存的广告轮播数据（离线时将原始 URL 转为本地 Data URI）
                 cached_ad = cache.get("ad_carousel")
                 if isinstance(cached_ad, dict):
                     ad_items = cached_ad.get("items")
                     ad_interval = cached_ad.get("interval_ms")
                     if isinstance(ad_items, list):
+                        for _ad in ad_items:
+                            if isinstance(_ad, dict) and isinstance(_ad.get("image"), str):
+                                _data_uri = self._asset_cache.load_cached_data_uri(
+                                    _ad["image"], "ad_carousel", _ad.get("id", "slide")
+                                )
+                                if _data_uri:
+                                    _ad["image"] = _data_uri
                         self._window.evaluate_js(self._build_ad_carousel_apply_js(ad_items, ad_interval))
                         log.debug(f"[缓存] 已注入 {len(ad_items)} 条缓存广告")
 
@@ -1403,6 +1524,44 @@ class AppApi:
                     if isinstance(banner_items, list):
                         self._window.evaluate_js(self._build_header_banner_apply_js(banner_items, banner_interval))
                         log.debug(f"[缓存] 已注入 {len(banner_items)} 条缓存横幅公告")
+
+                # 注入缓存的信息库广告数据（离线时将原始 URL 转为本地 Data URI）
+                cached_kb = cache.get("knowledge_ads")
+                if isinstance(cached_kb, dict) and isinstance(cached_kb.get("items"), list):
+                    for _kb_item in cached_kb["items"]:
+                        if not isinstance(_kb_item, dict):
+                            continue
+                        _kb_id = _kb_item.get("id", "kb_ad")
+                        for _field in ("avatar", "background"):
+                            _url = _kb_item.get(_field)
+                            if isinstance(_url, str) and _url:
+                                _data_uri = self._asset_cache.load_cached_data_uri(
+                                    _url, "knowledge_ads", f"{_kb_id}_{_field}"
+                                )
+                                if _data_uri:
+                                    _kb_item[_field] = _data_uri
+                    kb_json = json.dumps(cached_kb, ensure_ascii=False)
+                    self._window.evaluate_js(
+                        "(function(){"
+                        f"var cfg={kb_json};"
+                        "function apply(){"
+                        "if(!window.AIMER_KNOWLEDGE_ADS_CONFIG) return false;"
+                        "window.AIMER_KNOWLEDGE_ADS_CONFIG.items = cfg.items || [];"
+                        "if(window.KnowledgeAdsModule && typeof window.KnowledgeAdsModule.refresh === 'function') {"
+                        "window.KnowledgeAdsModule.refresh();"
+                        "}"
+                        "return true;"
+                        "}"
+                        "if(apply()) return;"
+                        "var attempts = 0;"
+                        "var timer = window.setInterval(function(){"
+                        "attempts += 1;"
+                        "if(apply() || attempts >= 20){ window.clearInterval(timer); }"
+                        "}, 300);"
+                        "})();"
+                    )
+                    kb_item_count = len(cached_kb.get("items", []))
+                    log.debug(f"[缓存] 已注入 {kb_item_count} 条缓存信息库广告")
             except Exception as e:
                 log.debug(f"注入服务器缓存失败: {e}")
 
@@ -5815,6 +5974,21 @@ class AppApi:
         # 保存新手引导状态到 settings.json。
         ok = self._cfg_mgr.set_guide_state(guide_state if isinstance(guide_state, dict) else {})
         return {"success": bool(ok)}
+
+    def get_uid_popup_state(self, seq_id):
+        # 读取 UID 欢迎弹窗主动展示状态。
+        return {
+            "success": True,
+            "shown": self._cfg_mgr.has_uid_popup_shown(seq_id),
+        }
+
+    def save_uid_popup_state(self, seq_id):
+        # 保存 UID 欢迎弹窗主动展示状态。
+        ok = self._cfg_mgr.mark_uid_popup_shown(seq_id)
+        return {
+            "success": bool(ok),
+            "shown": self._cfg_mgr.has_uid_popup_shown(seq_id),
+        }
 
     # --- 主题管理 API ---
     def _get_remote_theme_machine_id(self) -> str:

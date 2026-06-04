@@ -2667,7 +2667,17 @@ const app = {
         });
     },
 
+    ensureGlobalFeedbackLayer() {
+        ['modal-alert', 'toast-error', 'toast-warn', 'toast-info'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.parentElement !== document.body) {
+                document.body.appendChild(el);
+            }
+        });
+    },
+
     initToasts() {
+        this.ensureGlobalFeedbackLayer();
         if (this._toastInited) return;
         this._toastInited = true;
 
@@ -2714,6 +2724,7 @@ const app = {
     },
 
     showErrorToast(title, message, duration = 5000) {
+        this.ensureGlobalFeedbackLayer();
         const toast = document.getElementById('toast-error');
         if (!toast) {
             this.showAlert(title || this.t('common.error'), message, 'error');
@@ -2755,6 +2766,7 @@ const app = {
     },
 
     showWarnToast(title, message, duration = 5000) {
+        this.ensureGlobalFeedbackLayer();
         const toast = document.getElementById('toast-warn');
         if (!toast) {
             this.showAlert(title || this.t('common.warn'), message, 'warn');
@@ -2796,6 +2808,7 @@ const app = {
     },
 
     showInfoToast(title, message, duration = 5000) {
+        this.ensureGlobalFeedbackLayer();
         const toast = document.getElementById('toast-info');
         if (!toast) {
             this.showAlert(title || this.t('common.info'), message, 'info');
@@ -2838,6 +2851,7 @@ const app = {
 
     // 自定义提示弹窗（替代原生 alert）
     showAlert(title, message, iconType = 'info', linkUrl = null, options = null) {
+        this.ensureGlobalFeedbackLayer();
         const modal = document.getElementById('modal-alert');
         if (!modal) {
             console.error('modal-alert not found, falling back to native alert');

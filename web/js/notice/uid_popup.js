@@ -5,6 +5,8 @@
     var UID_SHOWN_KEY = 'aimer_uid_popup_shown';
     var MODAL_ID = 'modal-uid-welcome';
     var _injected = false;
+    var _first_show_pending = {};
+    var _first_show_handled = {};
 
     function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -15,9 +17,67 @@
             .replace(/'/g, '&#39;');
     }
 
+    function normalizeSeqId(seqId) {
+        var parsed = parseInt(seqId, 10);
+        return parsed > 0 ? String(parsed) : '';
+    }
+
     /* 将 UID 格式化为 5 位展示编号（如 1 → 00001） */
     function formatUid(seqId) {
         return String(parseInt(seqId, 10) || 0).padStart(5, '0');
+    }
+
+    function getLocalFirstShownIds() {
+        try {
+            var raw = localStorage.getItem(UID_SHOWN_KEY);
+            if (!raw) return [];
+            try {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    return parsed.map(normalizeSeqId).filter(Boolean);
+                }
+            } catch (e) {
+            }
+            var legacyId = normalizeSeqId(raw);
+            return legacyId ? [legacyId] : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function hasLocalFirstShow(seqId) {
+        return getLocalFirstShownIds().indexOf(String(seqId)) >= 0;
+    }
+
+    function markLocalFirstShow(seqId) {
+        try {
+            var shownIds = getLocalFirstShownIds();
+            if (shownIds.indexOf(String(seqId)) < 0) {
+                shownIds.push(String(seqId));
+            }
+            localStorage.setItem(UID_SHOWN_KEY, JSON.stringify(shownIds));
+        } catch (e) {
+        }
+    }
+
+    async function getBackendFirstShowState(seqId) {
+        if (!window.pywebview?.api?.get_uid_popup_state) return null;
+        try {
+            var res = await pywebview.api.get_uid_popup_state(seqId);
+            if (res && res.success) return !!res.shown;
+        } catch (e) {
+        }
+        return null;
+    }
+
+    async function markBackendFirstShow(seqId) {
+        if (!window.pywebview?.api?.save_uid_popup_state) return false;
+        try {
+            var res = await pywebview.api.save_uid_popup_state(seqId);
+            return !!(res && res.success);
+        } catch (e) {
+            return false;
+        }
     }
 
     /* ========== 样式注入 ========== */
@@ -206,11 +266,12 @@
 }
 
 .uid-badge-hash {
-    font-size: 20px;
-    font-weight: 600;
+    font-size: 18px;
+    font-weight: 700;
     color: var(--primary);
-    opacity: 0.45;
-    margin-right: 2px;
+    opacity: 0.5;
+    margin-right: 4px;
+    letter-spacing: 0.01em;
 }
 
 /* 四位数字中的每一位 */
@@ -356,7 +417,7 @@
                 '<div class="uid-welcome-subtitle-text">你的专属用户编号已生成</div>' +
                 '<div class="uid-badge-area">' +
                     '<div class="uid-badge-number">' +
-                        '<span class="uid-badge-hash">#</span>' +
+                        '<span class="uid-badge-hash">No.</span>' +
                         '<span class="uid-digit" id="uid-d0">0</span>' +
                         '<span class="uid-digit" id="uid-d1">0</span>' +
                         '<span class="uid-digit" id="uid-d2">0</span>' +
@@ -454,6 +515,7 @@
 
     /* ========== 弹窗控制 ========== */
     function showUidPopup(seqId) {
+        seqId = normalizeSeqId(seqId);
         if (!seqId) return;
         ensureModal();
         var modal = document.getElementById(MODAL_ID);
@@ -523,19 +585,39 @@
     }
 
     /* ========== 首次展示检查 ========== */
-    function checkUidFirstShow(seqId) {
-        if (!seqId) return;
+    async function checkUidFirstShow(seqId) {
+        seqId = normalizeSeqId(seqId);
+        if (!seqId || _first_show_handled[seqId] || _first_show_pending[seqId]) return;
         /* 新手引导运行期间不弹，延迟重试 */
         if (window.AuthorGuide && typeof window.AuthorGuide.isActive === 'function' && window.AuthorGuide.isActive()) {
-            setTimeout(function () { checkUidFirstShow(seqId); }, 3000);
+            _first_show_pending[seqId] = true;
+            setTimeout(function () {
+                _first_show_pending[seqId] = false;
+                checkUidFirstShow(seqId);
+            }, 3000);
             return;
         }
+
+        _first_show_pending[seqId] = true;
         try {
-            var shown = localStorage.getItem(UID_SHOWN_KEY);
-            if (shown === String(seqId)) return;
-            localStorage.setItem(UID_SHOWN_KEY, String(seqId));
-        } catch (e) { return; }
-        setTimeout(function () { showUidPopup(seqId); }, 800);
+            var backendShown = await getBackendFirstShowState(seqId);
+            var localShown = hasLocalFirstShow(seqId);
+            if (backendShown === true || localShown) {
+                if (backendShown !== true) {
+                    await markBackendFirstShow(seqId);
+                }
+                _first_show_handled[seqId] = true;
+                markLocalFirstShow(seqId);
+                return;
+            }
+
+            await markBackendFirstShow(seqId);
+            markLocalFirstShow(seqId);
+            _first_show_handled[seqId] = true;
+            setTimeout(function () { showUidPopup(seqId); }, 800);
+        } finally {
+            _first_show_pending[seqId] = false;
+        }
     }
 
     /* ========== footer UID 点击委托 ========== */

@@ -2542,6 +2542,11 @@ func initRouter(r *gin.Engine) {
 			"user_command": pendingCmd,
 			"user_seq_id":  userSeqID,
 		}
+		clientContentKeys := record.ContentCacheKeys
+		if clientContentKeys == nil {
+			clientContentKeys = map[string]string{}
+		}
+		contentCacheKeys := map[string]string{}
 		if canonicalMachineID != "" {
 			response["canonical_machine_id"] = canonicalMachineID
 		}
@@ -2563,10 +2568,7 @@ func initRouter(r *gin.Engine) {
 
 		// 构建广告轮播数据供客户端同步（图片路径补全为完整 URL）
 		items := LoadAdCarouselItems()
-		adCarouselPushKey := ""
-		if len(items) > 0 {
-			adCarouselPushKey = computePushContentHash(items)
-		}
+		adIntervalMs := LoadAdCarouselInterval()
 		scheme := "http"
 		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 			scheme = "https"
@@ -2577,51 +2579,67 @@ func initRouter(r *gin.Engine) {
 				items[i].Image = baseURL + items[i].Image
 			}
 		}
-		adJSON, _ := json.Marshal(items)
-		var parsed interface{}
-		json.Unmarshal(adJSON, &parsed)
-		response["ad_carousel_items"] = parsed
-		response["ad_carousel_interval_ms"] = LoadAdCarouselInterval()
+		adCarouselPushKey := computePushContentHash(map[string]interface{}{
+			"items":       items,
+			"interval_ms": adIntervalMs,
+		})
+		contentCacheKeys["ad_carousel"] = adCarouselPushKey
+		if clientContentKeys["ad_carousel"] != adCarouselPushKey {
+			adJSON, _ := json.Marshal(items)
+			var parsed interface{}
+			json.Unmarshal(adJSON, &parsed)
+			response["ad_carousel_items"] = parsed
+			response["ad_carousel_interval_ms"] = adIntervalMs
+		}
 
 		// 信息库广告位数据下发
 		kbRaw := LoadKnowledgeAdsConfig()
 		kbPushKey := ""
 		if kbRaw != "" {
+			kbCacheKey := computePushContentHash(kbRaw)
+			contentCacheKeys["knowledge_ads"] = kbCacheKey
 			var kbConfig KnowledgeAdsConfig
 			if err := json.Unmarshal([]byte(kbRaw), &kbConfig); err == nil {
 				for _, item := range kbConfig.Items {
 					if item.Enabled {
-						kbPushKey = computePushContentHash(kbRaw)
+						kbPushKey = kbCacheKey
 						break
 					}
 				}
 			}
 			var kbParsed map[string]interface{}
 			if err := json.Unmarshal([]byte(kbRaw), &kbParsed); err == nil {
-				// 补全图片路径
-				if kbItems, ok := kbParsed["items"].([]interface{}); ok {
-					for _, raw := range kbItems {
-						if m, ok := raw.(map[string]interface{}); ok {
-							for _, field := range []string{"avatar", "background"} {
-								if v, ok := m[field].(string); ok && len(v) > 0 && v[0] == '/' {
-									m[field] = baseURL + v
+				if clientContentKeys["knowledge_ads"] != kbCacheKey {
+					// 补全图片路径
+					if kbItems, ok := kbParsed["items"].([]interface{}); ok {
+						for _, raw := range kbItems {
+							if m, ok := raw.(map[string]interface{}); ok {
+								for _, field := range []string{"avatar", "background"} {
+									if v, ok := m[field].(string); ok && len(v) > 0 && v[0] == '/' {
+										m[field] = baseURL + v
+									}
 								}
 							}
 						}
 					}
+					response["knowledge_ads_items"] = kbParsed
 				}
-				response["knowledge_ads_items"] = kbParsed
 			}
 		}
 
 		// 构建公告列表数据供客户端同步
 		var noticeItems []NoticeItem
 		db.Order("sort_order asc, id desc").Find(&noticeItems)
-		response["notice_items"] = noticeItems
 		noticePushKeys := make([]string, 0, len(noticeItems))
 		for _, item := range noticeItems {
 			noticePushKeys = append(noticePushKeys, noticePushKey(item))
 		}
+		noticeItemsPushKey := computePushContentHash(noticePushKeys)
+		contentCacheKeys["notice_items"] = noticeItemsPushKey
+		if clientContentKeys["notice_items"] != noticeItemsPushKey {
+			response["notice_items"] = noticeItems
+		}
+		response["content_cache_keys"] = contentCacheKeys
 
 		// 公告反应摘要（emoji + count，不含用户列表）
 		type reactionSummary struct {

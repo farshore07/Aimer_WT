@@ -3,28 +3,29 @@ package main
 import "time"
 
 type TelemetryRecord struct {
-	ID                  uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	MachineID           string    `gorm:"uniqueIndex;type:varchar(64)" json:"machine_id"`
-	MachineIDCandidates []string  `gorm:"-" json:"machine_id_candidates,omitempty"`
-	Alias               string    `json:"alias"`
-	Version             string    `json:"version"`
-	OS                  string    `json:"os"`
-	OSRelease           string    `json:"os_release"`
-	OSVersion           string    `json:"os_version"`
-	Arch                string    `json:"arch"`
-	CPUCount            int       `json:"cpu_count"`
-	ScreenRes           string    `json:"screen_res"`
-	PythonVersion       string    `json:"python_version"`
-	Locale              string    `json:"locale"`
-	SessionID           int       `json:"session_id"`
-	PendingCommand      string    `json:"pending_command"`
-	PendingCommandLogID uint      `json:"pending_command_log_id" gorm:"default:0"`
-	IsStarred           bool      `json:"is_starred"`
-	IsAdmin             bool      `json:"is_admin"`
-	Tags                string    `gorm:"type:text;default:'[]'" json:"tags"`
-	CommentPerms        string    `gorm:"type:text;default:'{}'" json:"comment_perms"`
-	LastSeenAt          time.Time `gorm:"autoUpdateTime;index" json:"last_seen_at"`
-	CreatedAt           time.Time `gorm:"autoCreateTime;index" json:"created_at"`
+	ID                  uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	MachineID           string            `gorm:"uniqueIndex;type:varchar(64)" json:"machine_id"`
+	MachineIDCandidates []string          `gorm:"-" json:"machine_id_candidates,omitempty"`
+	ContentCacheKeys    map[string]string `gorm:"-" json:"content_cache_keys,omitempty"`
+	Alias               string            `json:"alias"`
+	Version             string            `json:"version"`
+	OS                  string            `json:"os"`
+	OSRelease           string            `json:"os_release"`
+	OSVersion           string            `json:"os_version"`
+	Arch                string            `json:"arch"`
+	CPUCount            int               `json:"cpu_count"`
+	ScreenRes           string            `json:"screen_res"`
+	PythonVersion       string            `json:"python_version"`
+	Locale              string            `json:"locale"`
+	SessionID           int               `json:"session_id"`
+	PendingCommand      string            `json:"pending_command"`
+	PendingCommandLogID uint              `json:"pending_command_log_id" gorm:"default:0"`
+	IsStarred           bool              `json:"is_starred"`
+	IsAdmin             bool              `json:"is_admin"`
+	Tags                string            `gorm:"type:text;default:'[]'" json:"tags"`
+	CommentPerms        string            `gorm:"type:text;default:'{}'" json:"comment_perms"`
+	LastSeenAt          time.Time         `gorm:"autoUpdateTime;index" json:"last_seen_at"`
+	CreatedAt           time.Time         `gorm:"autoCreateTime;index" json:"created_at"`
 }
 
 type StatsResponse struct {

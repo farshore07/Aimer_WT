@@ -68,6 +68,9 @@ class ConfigManager:
             "completed": False,
             "firstOpenHandled": False
         },
+        "uid_popup_state": {
+            "shown_seq_ids": []
+        },
         "unlocked_themes": [],
         "sights_path": "",
         "pending_dir": "",
@@ -382,6 +385,46 @@ class ConfigManager:
                 guide_state.get("firstOpenHandled", current["firstOpenHandled"])
             )
         self.config["guide_state"] = current
+        return self.save_config()
+
+    def _normalize_uid_popup_seq_id(self, seq_id) -> str:
+        """规范化用户 UID 弹窗记录编号。"""
+        try:
+            value = int(str(seq_id or "").strip())
+        except (TypeError, ValueError):
+            return ""
+        return str(value) if value > 0 else ""
+
+    def get_uid_popup_state(self) -> dict:
+        """读取 UID 欢迎弹窗主动展示状态。"""
+        raw = self.config.get("uid_popup_state", {})
+        if not isinstance(raw, dict):
+            return {"shown_seq_ids": []}
+
+        shown_ids = []
+        for item in raw.get("shown_seq_ids", []):
+            normalized = self._normalize_uid_popup_seq_id(item)
+            if normalized and normalized not in shown_ids:
+                shown_ids.append(normalized)
+        return {"shown_seq_ids": shown_ids}
+
+    def has_uid_popup_shown(self, seq_id) -> bool:
+        """判断指定 UID 是否已经主动展示过欢迎弹窗。"""
+        normalized = self._normalize_uid_popup_seq_id(seq_id)
+        if not normalized:
+            return False
+        return normalized in self.get_uid_popup_state().get("shown_seq_ids", [])
+
+    def mark_uid_popup_shown(self, seq_id) -> bool:
+        """记录指定 UID 已经主动展示过欢迎弹窗。"""
+        normalized = self._normalize_uid_popup_seq_id(seq_id)
+        if not normalized:
+            return False
+        state = self.get_uid_popup_state()
+        shown_ids = state.get("shown_seq_ids", [])
+        if normalized not in shown_ids:
+            shown_ids.append(normalized)
+        self.config["uid_popup_state"] = {"shown_seq_ids": shown_ids}
         return self.save_config()
 
     def get_config_dir(self) -> str:

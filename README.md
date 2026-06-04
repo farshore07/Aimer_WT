@@ -1,11 +1,30 @@
-# Aimer WT – War Thunder Mod Manager
+<!-- markdownlint-disable MD033 MD041 -->
+<div align="center">
+  <img alt="AimerWT Logo" src="./web/assets/logo.ico" width="160" height="160" />
+
+# Aimer WT
+
+  <p align="center">
+    War Thunder 一站式资源管理工具
+    <br/>
+    <a href="#english">English</a> | <a href="https://github.com/AimerSo/Aimer_WT/issues">报告 Bug</a>
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/Platform-Windows%20|%20Linux-0078D7?style=flat-square&logo=Windows" alt="Platform" />
+    <img src="https://img.shields.io/badge/Language-Python-3776AB?style=flat-square&logo=Python&logoColor=white" alt="Language" />
+    <img alt="license" src="https://img.shields.io/github/license/AimerSo/Aimer_WT?style=flat-square" />
+    <br/>
+    <a href="https://space.bilibili.com/1379084732" target="_blank"><img alt="Bilibili" src="https://img.shields.io/badge/Bilibili-AimerSo-00A1D6?style=flat-square&logo=bilibili" /></a>
+    <img alt="stars" src="https://img.shields.io/github/stars/AimerSo/Aimer_WT?style=flat-square&logo=github&color=darkgreen" />
+  </p>
+</div>
 
 ## 本软件的介绍
 AimerWT 是一款专为《战争雷霆》玩家打造的一站式资源管理工具，它支持语音包的一键替换与卸载，并针对涂装、任务、场景及模型提供直观的可视化管理界面。除此之外软件还内置了游戏字体自定义功能，能够自定义功能，基本都有做适配。
 
 桌面端基于 Python + PyWebview，前端静态资源在 `web/` 目录。
 
-## ENGLISH
+## <span id="english">ENGLISH</span>
 AimerWT is a comprehensive, all-in-one resource management tool designed specifically for WarThunder players. It features one-click installation and removal of voice packs, alongside an intuitive visual interface for managing camouflages, missions, hangars, and models. Additionally, it includes a built-in font customization engine with broad compatibility for personalizing in-game text.
 
 ## 开发者信息

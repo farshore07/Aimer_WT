@@ -97,7 +97,7 @@
         },
 
         isOnlineFeatureAvailable() {
-            return ONLINE_FEATURE_LOCALES.includes(this.currentLocale);
+            return true;
         }
     };
 })();
