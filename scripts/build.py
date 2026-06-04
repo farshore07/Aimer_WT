@@ -267,7 +267,7 @@ def build_exe():
             log.warning("未发现 tools 目录，跳过工具文件打包")
 
         if os.name == 'nt':
-            cmd.extend(["--icon", str(PROJECT_ROOT / "web" / "assets" / "logo.ico")])
+            cmd.extend(["--icon", str(PROJECT_ROOT / "web" / "assets" / "app_icon.ico")])
             cmd.extend(["--version-file", str(version_file)])
             log.info(f"已生成版本资源文件: {version_file}")
         else:
