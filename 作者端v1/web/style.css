@@ -466,7 +466,7 @@ body {
     width: 60%;
 }
 
-/* Home page migration from 个人主页.py */
+
 .card-like {
     background: #ffffff;
     border: 1px solid #e5e7eb;
@@ -3420,7 +3420,6 @@ body {
 }
 
 /* 拖拽区 */
-/* 拖拽区 */
 .toolbox-dropzone {
     border: 2px dashed #cbd5e1;
     border-radius: 16px;
@@ -4014,7 +4013,7 @@ body {
     }
 }
 
-/* ===== Custom fixes ===== */
+/* 覆盖品牌文字样式 */
 .app-brand-text {
     background: none;
     color: #111827;

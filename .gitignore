@@ -117,9 +117,9 @@ web/ads/README_ads_structure.md
 web/ai/目录结构说明.md
 作者端v1/说明.md
 
-# 测试文件（本地调试用，不上传）
-test_main_server_message.py
-services/test_telemetry_manager.py
+# 测试文件（已移至 OTHER/，本地调试用，不上传）
+# test_main_server_message.py  -> OTHER/
+# services/test_telemetry_manager.py  -> OTHER/
 AimerWT_Telemetry/router_test.go
 
 # 广告图片上传目录（运行时生成，不上传）
@@ -136,6 +136,9 @@ AimerWT_Telemetry/telemetry.db-wal
 # 日常与本次更新的开发测试无用产物拦截（不上传）
 AimerWT_Telemetry/telemetry_test_build
 公告.md
+
+# 作者端空占位文件（已移至 OTHER/）
+作者端v1/backend_pages/settings_page.py
 
 # Git 开发辅助文件（本地生成，不上传）
 git_diff.txt

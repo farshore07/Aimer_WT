@@ -361,7 +361,7 @@ const app = {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(this.buildPersistableState()));
         } catch (_e) {
-            // ignore
+            // localStorage 不可用时静默降级
         }
     },
 
@@ -3465,9 +3465,7 @@ const app = {
         const iconEl = overlay.querySelector(".author-works-icon");
         if (iconEl) {
             iconEl.innerHTML = `<img src="${avatarUrl}" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" onerror="this.src='${FALLBACK_AVATAR}'">`;
-            // 如果是图片，移除背景色和内边距可能更好，或者保持原样。
-            // 原样式有 background: #eff6ff; color: #3b82f6; display: inline-flex; ...
-            // img 盖在上面即可。
+
         }
 
         this.fillText(overlay, "#author-works-title", `${author} 的其他作品`);
@@ -3645,7 +3643,7 @@ const app = {
                 return true;
             }
         } catch (_e) {
-            // continue
+            // clipboard API 不可用时降级到 execCommand
         }
 
         try {

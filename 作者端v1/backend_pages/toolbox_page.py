@@ -181,9 +181,7 @@ class ToolboxService:
         self.app_base_dir = base_dir
         self.default_output_dir = self.app_base_dir / "AimerWT作者端" / "工具箱输出"
 
-    # ------------------------------------------------------------------
     # 公共 API（由 AppApi 转发给前端 pywebview js_api）
-    # ------------------------------------------------------------------
 
     def convert_images_to_webp(self, payload: dict) -> dict:
         """
@@ -326,5 +324,5 @@ class ToolboxService:
         调用系统文件夹选择对话框（pywebview），返回选中路径。
         注意：需要在调用侧通过 window 对象调用，这里只提供路径格式化。
         """
-        # 前端通过 pywebview create_file_dialog 处理，此处不需要实现
+        # 文件夹选择由前端 pywebview create_file_dialog 处理，后端仅返回提示
         return {"success": False, "msg": "请使用前端文件对话框"}

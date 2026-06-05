@@ -1,4 +1,4 @@
-﻿window.AuthorPageModules = window.AuthorPageModules || {};
+window.AuthorPageModules = window.AuthorPageModules || {};
 
 window.AuthorPageModules.voicepack = {
     _inited: false,
@@ -113,7 +113,7 @@ window.AuthorPageModules.voicepack = {
             if (workspaceEl) workspaceEl.textContent = String(data.workspace_dir || "-");
             if (libEl) libEl.textContent = String(data.library_dir || "-");
         } catch (_e) {
-            // ignore
+            // 工作区信息加载失败时静默降级
         }
     },
 
