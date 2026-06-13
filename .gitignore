@@ -34,6 +34,12 @@ WT待解压区/
 WT语音包库/
 待解压区/
 AimerWT资源库/
+tools/7zip/downloads/
+tools/7zip/windows-full/**/*
+!tools/7zip/windows-full/**/
+!tools/7zip/windows-full/*/7z.exe
+!tools/7zip/windows-full/*/7z.dll
+!tools/7zip/windows-full/*/License.txt
 
 # Local config (often contains personal game path)
 settings.json
