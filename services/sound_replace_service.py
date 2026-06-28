@@ -677,9 +677,11 @@ class SoundReplaceService:
             backup_path = game_backup_dir / str(entry.get("original_backup_rel", ""))
             self._cleanup_new_backups([backup_path], originals_dir)
 
+        cleared_records = sum(1 for item in skipped_files if item.get("record_cleared"))
         result = {
-            "success": len(failed_files) == 0 and len(restored_entries) > 0,
+            "success": len(failed_files) == 0 and (len(restored_entries) > 0 or cleared_records > 0),
             "restored": len(restored_entries),
+            "cleared_records": cleared_records,
             "failed": len(failed_files),
             "skipped": len(skipped_files),
             "failed_files": failed_files,
