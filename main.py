@@ -2719,7 +2719,8 @@ class AppApi:
     def get_library_list(self, opts=None):
         # 扫描语音包库并返回每个语音包的详情列表，包含封面 data URL 以便前端直接渲染。
         t0 = time.perf_counter() if self._perf_enabled else None
-        mods = self._lib_mgr.scan_library()
+        force_refresh = bool(opts.get("force_refresh")) if isinstance(opts, dict) else False
+        mods = self._lib_mgr.scan_library(force_refresh=force_refresh)
         result = []
 
         # 默认封面路径（当语音包未提供封面或封面文件不存在时使用）
@@ -3685,7 +3686,7 @@ class AppApi:
 
                 # 完成后通知前端刷新列表
                 if self._window:
-                    self._window.evaluate_js("app.refreshLibrary()")
+                    self._window.evaluate_js("app.refreshLibrary({force:true})")
                     self._update_loading_i18n(100, "loading.import.done")
             except ArchivePasswordCanceled:
                 log.warning("已取消输入密码，导入已终止")
@@ -3750,7 +3751,7 @@ class AppApi:
 
                     # 完成后通知前端刷新列表
                     if self._window:
-                        self._window.evaluate_js("app.refreshLibrary()")
+                        self._window.evaluate_js("app.refreshLibrary({force:true})")
                         self._update_loading_i18n(100, "loading.import.done")
                 except ArchivePasswordCanceled:
                     log.warning("已取消输入密码，导入已终止")
@@ -3798,7 +3799,7 @@ class AppApi:
                 )
 
                 if self._window:
-                    self._window.evaluate_js("app.refreshLibrary()")
+                    self._window.evaluate_js("app.refreshLibrary({force:true})")
                     self._update_loading_i18n(100, "loading.import.done")
             except ArchivePasswordCanceled:
                 log.warning("已取消输入密码，导入已终止")
@@ -5436,7 +5437,7 @@ class AppApi:
                     zip_path, path, progress_callback=self.update_loading_ui
                 )
                 if self._window:
-                    self._window.evaluate_js("if(app.refreshSkins) app.refreshSkins()")
+                    self._window.evaluate_js("if(app.refreshSkins) app.refreshSkins({force:true})")
                     self._update_loading_i18n(100, "loading.skin.import_done")
             except FileExistsError as e:
                 log.warning(f"{e}")
@@ -5873,6 +5874,7 @@ class AppApi:
             ) or str(target) == str(library_dir):
                 raise Exception("非法路径")
             shutil.rmtree(target)
+            self._lib_mgr.clear_cache(mod_name)
             log.info(f"已从库中删除语音包: {mod_name}")
             return {"success": True, "msg": f"已从库中删除: {mod_name}"}
         except Exception as e:
@@ -5971,6 +5973,7 @@ class AppApi:
 
             if target.exists():
                 shutil.rmtree(target)
+                self._lib_mgr.clear_cache(mod_name)
                 log.info(f"已从库中删除语音包: {mod_name}")
             else:
                 log.warning(f"库文件不存在: {mod_name}")
@@ -6803,7 +6806,7 @@ class AppApi:
                     progress_callback=self.update_loading_ui,
                 )
                 if self._window:
-                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights({manual:true})")
+                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights({force:true})")
                     payload = self._runtime_loading_i18n_payload(result.get("message") or "炮镜导入完成")
                     if payload:
                         self._update_loading_i18n(100, payload["key"], payload["params"])
@@ -6854,7 +6857,7 @@ class AppApi:
                     zip_path, progress_callback=self.update_loading_ui
                 )
                 if self._window:
-                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights()")
+                    self._window.evaluate_js("if(app.refreshSights) app.refreshSights({force:true})")
                     self._update_loading_i18n(100, "loading.sight.import_done")
             except FileExistsError as e:
                 log.warning(f"{e}")

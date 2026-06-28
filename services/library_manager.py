@@ -104,6 +104,14 @@ class LibraryManager:
         # 确保目录存在
         self._ensure_dirs()
 
+    def clear_cache(self, mod_name: str | None = None) -> None:
+        self._scan_cache = None
+        self._last_scan_mtime = 0
+        if mod_name:
+            self._details_cache.pop(str(mod_name), None)
+        else:
+            self._details_cache.clear()
+
     def update_paths(self, pending_dir: str | None = None,
                      library_dir: str | None = None) -> dict[str, bool]:
         """
@@ -260,7 +268,7 @@ class LibraryManager:
         """打开语音包库目录，供用户查看已导入的语音包文件夹。"""
         self._open_folder_cross_platform(self.library_dir)
 
-    def scan_library(self) -> list[str]:
+    def scan_library(self, force_refresh: bool = False) -> list[str]:
         """
         扫描语音包库目录下的语音包文件夹列表。
         """
@@ -270,7 +278,7 @@ class LibraryManager:
 
             # 检查目录修改时间
             current_mtime = self.library_dir.stat().st_mtime
-            if self._scan_cache is not None and self._last_scan_mtime == current_mtime:
+            if not force_refresh and self._scan_cache is not None and self._last_scan_mtime == current_mtime:
                 return self._scan_cache
 
             mods = []
