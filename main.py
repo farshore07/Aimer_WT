@@ -368,8 +368,9 @@ def _acquire_single_instance_lock(lock_path: Path | None = None) -> bool:
     if _single_instance_lock_file is not None:
         return True
 
-    lock_path = lock_path or (Path(tempfile.gettempdir()) / "AimerWT.single-instance.lock")
+    lock_path = lock_path or (get_docs_data_dir() / "AimerWT.single-instance.lock")
     try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_file = open(lock_path, "a+b")
         lock_file.seek(0)
         if sys.platform == "win32":
