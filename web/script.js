@@ -645,7 +645,7 @@ const app = {
         const seq = this._skinsRefreshSeq;
 
         try {
-            const forceRefresh = !!(opts && opts.manual);
+            const forceRefresh = !!(opts && (opts.force || opts.manual));
             if (this._skinsFallbackTimer) {
                 clearTimeout(this._skinsFallbackTimer);
                 this._skinsFallbackTimer = null;
@@ -3595,11 +3595,12 @@ const app = {
         if (!listContainer) {
             return;
         }
+        const forceRefresh = !!(opts && (opts.force || opts.manual));
         if (this._libraryRefreshing) {
+            if (forceRefresh) this._libraryRefreshQueued = true;
             return;
         }
-        const isManual = !!(opts && opts.manual);
-        if (!isManual && this._libraryLoaded) {
+        if (!forceRefresh && this._libraryLoaded) {
             return;
         }
 
@@ -3620,7 +3621,7 @@ const app = {
         await new Promise(r => setTimeout(r, 200));
 
         try {
-            const mods = await pywebview.api.get_library_list({ force_refresh: isManual });
+            const mods = await pywebview.api.get_library_list({ force_refresh: forceRefresh });
             app.modCache = mods;
             this.renderList(mods);
         } catch (e) {
@@ -3639,6 +3640,10 @@ const app = {
 
             this._libraryLoaded = true;
             this._libraryRefreshing = false;
+            if (this._libraryRefreshQueued) {
+                this._libraryRefreshQueued = false;
+                this.refreshLibrary({ force: true });
+            }
         }
     },
 
@@ -4152,6 +4157,21 @@ const app = {
         window.open(url);
     },
 
+    removeModFromLibraryView(modId) {
+        const id = String(modId || '');
+        if (!id) return;
+        if (Array.isArray(this.modCache)) {
+            this.modCache = this.modCache.filter(mod => String(mod?.id || '') !== id);
+        }
+        document.querySelectorAll('.mod-card').forEach(card => {
+            if (card.dataset.id === id) card.remove();
+        });
+        const listContainer = document.getElementById('lib-list');
+        if (listContainer && !listContainer.querySelector('.mod-card')) {
+            this.renderList([]);
+        }
+    },
+
     async deleteMod(modId) {
         const yes = await app.confirm(
             this.t('lib.delete_confirm_title'),
@@ -4169,6 +4189,7 @@ const app = {
 
             const result = await pywebview.api.delete_mod(modId);
             if (result && result.success) {
+                this.removeModFromLibraryView(modId);
                 app.showToast(result.msg || this.t('lib.delete_from_library'), 'success');
 
                 // 更新已安装列表
@@ -4181,7 +4202,7 @@ const app = {
                 }
 
                 // 强制刷新库列表以更新卡片状态
-                this.refreshLibrary({ manual: true });
+                this.refreshLibrary({ force: true });
             } else {
                 app.showToast(result?.msg || this.t('lib.delete_failed'), 'error');
             }
@@ -4249,6 +4270,7 @@ const app = {
 
             const result = await pywebview.api.delete_mod(modId);
             if (result && result.success) {
+                this.removeModFromLibraryView(modId);
                 app.showToast(this.t('lib.delete_from_library'), 'success');
 
                 // 更新已安装列表
@@ -4261,7 +4283,7 @@ const app = {
                 }
 
                 // 强制刷新库列表以更新卡片状态
-                this.refreshLibrary({ manual: true });
+                this.refreshLibrary({ force: true });
             } else {
                 app.showToast(result?.msg || this.t('lib.delete_failed'), 'error');
             }
@@ -4300,7 +4322,7 @@ const app = {
                 }
 
                 // 强制刷新库列表
-                this.refreshLibrary({ manual: true });
+                this.refreshLibrary({ force: true });
             } else {
                 app.showToast(result?.msg || this.t('lib.uninstall_failed'), 'error');
                 if (card) {
@@ -4326,6 +4348,7 @@ const app = {
 
             const result = await pywebview.api.delete_mod_completely(modId);
             if (result && result.success) {
+                this.removeModFromLibraryView(modId);
                 app.showToast(this.t('lib.delete_complete_success'), 'success');
 
                 // 更新已安装列表
@@ -4338,7 +4361,7 @@ const app = {
                 }
 
                 // 强制刷新库列表
-                this.refreshLibrary({ manual: true });
+                this.refreshLibrary({ force: true });
             } else {
                 app.showToast(result?.msg || this.t('lib.delete_failed'), 'error');
             }
@@ -4497,7 +4520,7 @@ const app = {
 
                 // 强制刷新库列表
                 if (appRef.refreshLibrary) {
-                    appRef.refreshLibrary({ manual: true });
+                    appRef.refreshLibrary({ force: true });
                 }
             } else {
                 const appRef = window.app || this;
@@ -6005,7 +6028,7 @@ app.refreshSights = async function (opts) {
         if (countEl) countEl.textContent = this.t('tools.count_refreshing');
         await new Promise(requestAnimationFrame);
 
-        const forceRefresh = !!(opts && opts.manual);
+        const forceRefresh = !!(opts && (opts.force || opts.manual));
         if (canAsyncRefresh) {
             waitingForAsyncPush = true;
             pywebview.api.refresh_sights_async({ force_refresh: forceRefresh });
@@ -7962,6 +7985,7 @@ app.setupGlobalDragDrop = function () {
             if (shouldIgnoreClick(e.target)) return;
             const card = e.target.closest('.mod-card');
             if (!card || !list.contains(card)) return;
+            if (card.classList.contains('leaving')) return;
 
             const mod = findModById(card.dataset.id || '');
             if (!mod) return;
