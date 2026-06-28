@@ -2345,6 +2345,10 @@ class AppApi:
         """
         if self._window:
             try:
+                try:
+                    self._window.evaluate_js("if(window.app && app.setBackgroundPaused) app.setBackgroundPaused(true);")
+                except Exception:
+                    pass
                 self._window.hide()
                 self._logger.info("[SYS] 窗口已最小化到托盘")
             except Exception as e:
