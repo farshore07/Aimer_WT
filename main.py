@@ -84,7 +84,7 @@ from wt.wt_text import (
     sanitize_csv_file_name,
 )
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 AGREEMENT_VERSION = "2026-05-29-v3-beta"
 DEFAULT_PENDING_DIR_NAME = "待解压区"
 DEFAULT_RESOURCE_ROOT_DIR_NAME = "AimerWT资源库"

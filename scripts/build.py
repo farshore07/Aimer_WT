@@ -15,8 +15,8 @@ log = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EXE_DISPLAY_NAME = "AimerWT V3 Beta"
-APP_VERSION = "3.0.0"
-APP_VERSION_TUPLE = (3, 0, 0, 0)
+APP_VERSION = "3.0.1"
+APP_VERSION_TUPLE = (3, 0, 1, 0)
 
 
 REQUIRED_BUILD_ENV_VARS = (
